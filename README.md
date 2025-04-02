@@ -8,7 +8,6 @@
 ## Visão Geral do Dashboard
 
 ![Dashboard Screenshot](image.png)
-*(Substitua `image.png` pelo caminho correto se a imagem não estiver na raiz)*
 
 ## Principais Funcionalidades
 

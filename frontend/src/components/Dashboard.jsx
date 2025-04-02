@@ -3,9 +3,9 @@ import React, { useContext, useState, useCallback } from 'react';
 import { AuthContext } from '../context/AuthContext';
 import ForwardList from './ForwardList'; // Criaremos a seguir
 import AddForwardModal from './AddForwardModal'; // Para adicionar/editar
-import { FaPlus } from 'react-icons/fa'; // Ícone para botão Adicionar
+import { FaPlus, FaFlask } from 'react-icons/fa'; // Ícones
 
-function Dashboard() {
+function Dashboard({ navigateTo }) { // Recebe a função de navegação
   const auth = useContext(AuthContext);
 
    if (!auth) {
@@ -56,10 +56,13 @@ function Dashboard() {
         <div className="flex-1">
           <a className="btn btn-ghost text-xl">Route Forward Dashboard</a>
         </div>
-        <div className="flex-none gap-2">
+        <div className="flex gap-4">
           {/* Botão Adicionar Novo */}
           <button className="btn btn-primary" onClick={handleOpenAddModal}>
              <FaPlus className="mr-1" /> Adicionar Forward
+          </button>
+          <button className="btn btn-accent btn-outline" onClick={() => navigateTo('playground')}>
+              <FaFlask className="mr-1" /> Playground
           </button>
           <button className="btn btn-outline btn-error" onClick={logout}>Logout</button>
         </div>

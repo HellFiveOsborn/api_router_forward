@@ -9,12 +9,16 @@ const fs = require('fs');
 const axios = require('axios'); // Importar axios
 const vm = require('vm'); // Importar vm
 const forwardService = require('./services/forwardService'); // Importar forwardService
+const { URL } = require('url'); // Para parsear URL de destino
+const { performance } = require('perf_hooks'); // Para medir tempo
 
 const app = express();
 const PORT = process.env.BACKEND_PORT || 3001;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  exposedHeaders: ['X-Forward-Trace'],
+}));
 app.use(bodyParser.json());
 
 // --- Configuração do Banco de Dados ---
@@ -23,7 +27,6 @@ const dbPath = path.join(dbDir, 'database.sqlite');
 
 if (!fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
-  console.log(`Diretório criado: ${dbDir}`);
 }
 
 const db = new sqlite3.Database(dbPath, (err) => {
@@ -32,20 +35,11 @@ const db = new sqlite3.Database(dbPath, (err) => {
   } else {
     console.log(`Conectado ao banco de dados SQLite em: ${dbPath}`);
     db.run(`CREATE TABLE IF NOT EXISTS forwards (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      nome TEXT UNIQUE NOT NULL,
-      slug TEXT UNIQUE NOT NULL, -- Adicionado slug
-      custom_route TEXT,
-      url_destino TEXT NOT NULL,
-      metodo TEXT NOT NULL,
-      headers_in_config TEXT,
-      headers_out_config TEXT,
-      params_config TEXT,
-      headers_validator_script TEXT,
-      params_validator_script TEXT,
-      response_script TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT UNIQUE NOT NULL, slug TEXT UNIQUE NOT NULL,
+      custom_route TEXT, url_destino TEXT NOT NULL, metodo TEXT NOT NULL,
+      headers_in_config TEXT, headers_out_config TEXT, params_config TEXT,
+      headers_validator_script TEXT, params_validator_script TEXT, response_script TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`, (err) => {
       if (err) console.error("Erro ao criar tabela 'forwards':", err.message);
     });
@@ -53,252 +47,273 @@ const db = new sqlite3.Database(dbPath, (err) => {
 });
 // --- Fim Configuração do Banco de Dados ---
 
+// --- Helper Functions ---
+function getDefaultPathFromUrl(urlString) {
+    try {
+        const parsedUrl = new URL(urlString);
+        const pathname = parsedUrl.pathname || '/';
+        return pathname === '/' ? '/' : pathname.replace(/\/$/, '');
+    } catch (e) { return '/'; }
+}
+
+function runScript(script, context, scriptName = 'script', timeout = 100) {
+    if (!script || typeof script !== 'string' || script.trim() === '') {
+        return scriptName === 'Manipulador de Resposta' ? undefined : true;
+    }
+    try {
+        const sandbox = vm.createContext({ ...context, console: { log: console.log, warn: console.warn, error: console.error }, setTimeout });
+        const wrappedScript = `(${script})`;
+        const result = vm.runInContext(wrappedScript, sandbox, { timeout });
+        if (typeof result === 'function') {
+            if (scriptName === 'Validador de Headers') return result(context.headers, context.sharedContext);
+            if (scriptName === 'Validador de Parâmetros') return result(context[Object.keys(context).find(k => k !== 'sharedContext')], context.sharedContext);
+            if (scriptName === 'Manipulador de Resposta') {
+                const scriptResultObject = result(context.responseBody, context.responseHeaders, context.sharedContext);
+                if (typeof scriptResultObject === 'object' && scriptResultObject !== null && typeof scriptResultObject.headers === 'object') {
+                    return { body: scriptResultObject.body, headers: scriptResultObject.headers };
+                } else {
+                     console.warn(`[Forwarder Middleware] ${scriptName} não retornou um objeto { body, headers } válido.`);
+                     return { body: scriptResultObject, headers: context.responseHeaders };
+                }
+            }
+            return result(...Object.values(context));
+        } else {
+             console.warn(`[Forwarder Middleware] ${scriptName} não definiu uma função.`);
+             return new Error(`Erro interno: ${scriptName} não definiu uma função.`);
+        }
+    } catch (error) {
+        console.error(`[Forwarder Middleware] Erro durante a execução de ${scriptName}:`, error);
+        return error;
+    }
+}
 
 // --- Rotas API ---
-// Rota de Autenticação
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body;
-  const validUser = process.env.USER;
-  const validPassword = process.env.PASSWORD;
+  const validUser = process.env.USER; const validPassword = process.env.PASSWORD;
   const jwtSecret = process.env.JWT_SECRET || 'seu_segredo_jwt_padrao';
-
-  if (!validUser || !validPassword) {
-      console.error("Variáveis USER e PASSWORD não definidas no .env");
-      return res.status(500).json({ message: 'Erro interno: Configuração de autenticação ausente.' });
-  }
-   if (jwtSecret === 'seu_segredo_jwt_padrao') {
-    console.warn("AVISO: Usando chave JWT padrão. Defina JWT_SECRET no seu arquivo .env!");
-  }
-
+  if (!validUser || !validPassword) return res.status(500).json({ message: 'Erro interno: Configuração ausente.' });
+  if (jwtSecret === 'seu_segredo_jwt_padrao') console.warn("AVISO: Usando chave JWT padrão!");
   if (username === validUser && password === validPassword) {
     const token = jwt.sign({ username }, jwtSecret, { expiresIn: process.env.JWT_EXPIRATION || '1d' });
     res.json({ token });
-  } else {
-    res.status(401).json({ message: 'Credenciais inválidas' });
-  }
+  } else { res.status(401).json({ message: 'Credenciais inválidas' }); }
 });
-
-// Rota de Teste API
-app.get('/api/ping', (req, res) => {
-  res.json({ message: 'pong' });
-});
-
-// Rotas CRUD para Forwards
+app.get('/api/ping', (req, res) => res.json({ message: 'pong' }));
 const forwardsRouter = require('./routes/forwards');
 app.use('/api/forwards', forwardsRouter);
 // --- Fim Rotas API ---
 
 
 // --- Middleware de Encaminhamento (FINAL) ---
-// Função auxiliar para executar scripts (copiada de forwarder.js)
-function runScript(script, context, scriptName = 'script', timeout = 100) {
-    if (!script || typeof script !== 'string' || script.trim() === '') return true;
-    try {
-        const sandbox = vm.createContext({ ...context, console: { log: console.log, warn: console.warn, error: console.error }, setTimeout });
-        const wrappedScript = `(${script})`;
-        const result = vm.runInContext(wrappedScript, sandbox, { timeout });
-        if (typeof result === 'function') {
-            // Executa a função do script com os argumentos apropriados
-            // Passa os argumentos corretos, incluindo sharedContext, para cada tipo de script
-            if (scriptName === 'Validador de Headers') return result(context.headers, context.sharedContext);
-            if (scriptName === 'Validador de Parâmetros') return result(context[Object.keys(context).find(k => k !== 'sharedContext')], context.sharedContext); // Passa o argumento principal (body/query) e sharedContext
-            if (scriptName === 'Manipulador de Resposta') return result(context.responseBody, context.responseHeaders, context.sharedContext);
-            // Fallback genérico improvável de ser usado com a estrutura atual
-            return result(...Object.values(context));
-        } else {
-             // Se o script não define uma função, considera um erro de script
-             console.warn(`[Forwarder Middleware] ${scriptName} não definiu uma função.`);
-             // Retorna um erro específico para diferenciar de falha de validação (null/undefined)
-             return new Error(`Erro interno: ${scriptName} não definiu uma função.`);
-        }
-    } catch (error) {
-        // Captura erros *durante a execução* do script ou do vm.runInContext
-        console.error(`[Forwarder Middleware] Erro durante a execução de ${scriptName}:`, error);
-        // Retorna o próprio erro para ser tratado no middleware principal
-        return error; // Pode ser SyntaxError, ReferenceError, etc.
-    }
-}
-
-// Middleware principal de encaminhamento
 app.use(async (req, res, next) => {
-    // Ignora rotas da API que já foram tratadas
-    if (req.path.startsWith('/api/')) {
-        return next();
-    }
+    if (req.path.startsWith('/api/')) return next();
 
+    const overallStartTime = performance.now(); // Tempo inicial geral
     const originalPath = req.originalUrl;
     const method = req.method;
     const requestBody = req.body;
     const requestHeaders = { ...req.headers };
+    const traceLog = {};
+    const sharedContext = {};
 
     console.log(`\n--- [Forwarder Middleware] Recebida requisição ---`);
     console.log(`Path Original: ${originalPath}`);
     console.log(`Método: ${method}`);
+    traceLog['req-received'] = { status: 'success', time: 0, data: { method, originalPath, headers: requestHeaders, body: requestBody } };
 
     try {
-        // Usa req.path que contém o caminho após o ponto de montagem (que é '/' aqui)
+        const configLookupStartTime = performance.now();
         const config = await forwardService.findBySlugAndPath(req.path);
+        const configLookupEndTime = performance.now();
 
         if (!config) {
+            traceLog['config-lookup'] = { status: 'error', time: Math.round(configLookupEndTime - configLookupStartTime), data: { message: 'Nenhuma configuração encontrada.' } };
             console.log(`[Forwarder Middleware] Rota não configurada para ${originalPath}`);
-            // Se não encontrou config, passa para o próximo handler (que será o 404 do Express)
             return next();
         }
-
+        traceLog['config-lookup'] = { status: 'success', time: Math.round(configLookupEndTime - configLookupStartTime), data: { foundId: config.id, name: config.nome, slug: config.slug, customRoute: config.custom_route, targetUrl: config.url_destino } };
         console.log(`[Forwarder Middleware] Usando configuração: ${config.nome}`);
 
         if (config.metodo.toUpperCase() !== method.toUpperCase()) {
-             console.log(`[Forwarder Middleware] Método não permitido: ${method}. Esperado: ${config.metodo}`);
+             traceLog['method-validation'] = { status: 'error', data: { message: `Método ${method} não permitido. Esperado: ${config.metodo}` } };
+             res.set('X-Forward-Trace', JSON.stringify(traceLog));
              return res.status(405).json({ error: `Método ${method} não permitido para esta rota. Permitido: ${config.metodo}` });
         }
+        traceLog['method-validation'] = { status: 'success' };
 
-        let targetUrl = config.url_destino.replace(/\/$/, ''); // Remove barra final da URL base
+        // Construção da URL de destino
+        let targetUrl = config.url_destino.replace(/\/$/, '');
         let remainingPath = '';
-
-        // Extrai o slug e o subPath novamente para calcular o remainingPath
         const pathSegments = req.path.split('/').filter(Boolean);
-        const slugFromPath = pathSegments[0]; // Já sabemos que corresponde ao config.slug
         const subPath = '/' + pathSegments.slice(1).join('/');
-
-        // Determina o prefixo esperado (custom ou padrão)
         const expectedSubPathPrefix = config.custom_route ? config.custom_route.replace(/\/$/, '') : getDefaultPathFromUrl(config.url_destino);
-
-        // O remainingPath é a parte do subPath que vem *depois* do prefixo esperado
         if (subPath.startsWith(expectedSubPathPrefix)) {
             remainingPath = subPath.substring(expectedSubPathPrefix.length);
         }
-        // Garante que remainingPath comece com / se não estiver vazio
         if (remainingPath && !remainingPath.startsWith('/')) {
             remainingPath = '/' + remainingPath;
         }
-
-        // Anexa o remainingPath à targetUrl (já sem barra final)
         targetUrl += remainingPath;
 
-        const targetMethod = config.metodo.toLowerCase();
-        let headersToSend = { ...requestHeaders }; // Alterado de const para let
-        // Lógica de drop removida - será feita no script
-        delete headersToSend['host'];
-        delete headersToSend['connection'];
-        delete headersToSend['content-length'];
-
-        const sharedContext = {}; // Inicializa o contexto compartilhado para esta requisição
+        // Validação/Modificação de Headers
+        let headersToSend = { ...requestHeaders };
+        delete headersToSend['host']; delete headersToSend['connection']; delete headersToSend['content-length'];
+        const headerValidationStartTime = performance.now();
         let headerValidationResult = runScript(config.headers_validator_script, { headers: headersToSend, sharedContext }, 'Validador de Headers');
+        const headerValidationEndTime = performance.now();
+        const headerValidationDuration = Math.round(headerValidationEndTime - headerValidationStartTime);
 
-        // Verifica se houve erro na execução do script
         if (headerValidationResult instanceof Error) {
-             console.error("[Forwarder Middleware] Erro na execução do script validador de headers:", headerValidationResult.message);
+             traceLog['header-validation'] = { status: 'error', time: headerValidationDuration, data: { message: "Erro interno ao executar script.", error: headerValidationResult.message } };
+             res.set('X-Forward-Trace', JSON.stringify(traceLog));
              return res.status(500).json({ error: "Erro interno ao executar script validador de headers.", details: headerValidationResult.message });
-        }
-        // Verifica se a validação falhou (script retornou null ou undefined)
-        else if (headerValidationResult === null || headerValidationResult === undefined) {
-             console.log("[Forwarder Middleware] Validação de Headers falhou (script retornou null/undefined).");
+        } else if (headerValidationResult === null || headerValidationResult === undefined) {
+             traceLog['header-validation'] = { status: 'error', time: headerValidationDuration, data: { message: "Bloqueado pelo script (retornou null/undefined)." } };
+             res.set('X-Forward-Trace', JSON.stringify(traceLog));
              return res.status(400).json({ error: "Requisição bloqueada pelo validador de headers." });
-        }
-        // Se passou, usa o resultado como os novos headers (pode ter sido modificado)
-        else {
-             console.log("[Forwarder Middleware] Validação de Headers OK. Headers (potencialmente modificados):", headerValidationResult);
-             headersToSend = headerValidationResult; // Usa o resultado do script
+        } else {
+             traceLog['header-validation'] = { status: 'success', time: headerValidationDuration, data: { headersBefore: requestHeaders, headersAfter: headerValidationResult } };
+             headersToSend = headerValidationResult;
         }
 
+        // Validação/Modificação de Parâmetros
         let dataToSend = requestBody;
         let paramsToSend = req.query;
         const paramsConfig = config.params_config || {};
         const paramsType = paramsConfig.type || (['POST', 'PUT', 'PATCH'].includes(method.toUpperCase()) ? 'body' : 'query');
-
-        // Lógica de drop removida - será feita no script
-
-        const paramsContext = { [paramsType]: paramsType === 'body' ? dataToSend : paramsToSend, sharedContext }; // Passa sharedContext
+        const paramsContext = { [paramsType]: paramsType === 'body' ? dataToSend : paramsToSend, sharedContext };
+        const paramValidationStartTime = performance.now();
         let paramsValidationResult = runScript(config.params_validator_script, paramsContext, 'Validador de Parâmetros');
+        const paramValidationEndTime = performance.now();
+        const paramValidationDuration = Math.round(paramValidationEndTime - paramValidationStartTime);
 
-         // Verifica se houve erro na execução do script
         if (paramsValidationResult instanceof Error) {
-             console.error(`[Forwarder Middleware] Erro na execução do script validador de parâmetros (${paramsType}):`, paramsValidationResult.message);
+             traceLog['param-validation'] = { status: 'error', time: paramValidationDuration, data: { message: "Erro interno ao executar script.", error: paramsValidationResult.message, type: paramsType } };
+             res.set('X-Forward-Trace', JSON.stringify(traceLog));
              return res.status(500).json({ error: `Erro interno ao executar script validador de parâmetros (${paramsType}).`, details: paramsValidationResult.message });
-        }
-        // Verifica se a validação falhou (script retornou null ou undefined)
-        else if (paramsValidationResult === null || paramsValidationResult === undefined) {
-             console.log(`[Forwarder Middleware] Validação de Parâmetros (${paramsType}) falhou (script retornou null/undefined).`);
+        } else if (paramsValidationResult === null || paramsValidationResult === undefined) {
+             traceLog['param-validation'] = { status: 'error', time: paramValidationDuration, data: { message: "Bloqueado pelo script (retornou null/undefined).", type: paramsType } };
+             res.set('X-Forward-Trace', JSON.stringify(traceLog));
              return res.status(400).json({ error: `Requisição bloqueada pelo validador de parâmetros (${paramsType}).` });
-        }
-         // Se passou, usa o resultado como os novos dados/params
-        else {
-             console.log(`[Forwarder Middleware] Validação de Parâmetros (${paramsType}) OK. Dados (potencialmente modificados):`, paramsValidationResult);
-             if (paramsType === 'body') {
-                 dataToSend = paramsValidationResult;
-             } else {
-                 paramsToSend = paramsValidationResult;
-             }
+        } else {
+             const originalParams = paramsType === 'body' ? requestBody : req.query;
+             traceLog['param-validation'] = { status: 'success', time: paramValidationDuration, data: { paramsBefore: originalParams, paramsAfter: paramsValidationResult, type: paramsType } };
+             if (paramsType === 'body') dataToSend = paramsValidationResult;
+             else paramsToSend = paramsValidationResult;
         }
 
+        // Envio para API de Destino
         console.log(`\n--- [Forwarder Middleware] Encaminhando para Destino ---`);
         console.log(`URL Destino Final: ${targetUrl}`);
-        console.log(`Método Destino: ${targetMethod}`);
-
+        console.log(`Método Destino: ${config.metodo.toLowerCase()}`);
+        traceLog['req-sent'] = { status: 'pending', data: { url: targetUrl, method: config.metodo.toLowerCase(), headers: headersToSend, body: dataToSend, queryParams: paramsToSend } };
+        const requestStartTime = performance.now(); // Marca tempo antes do axios
         const axiosConfig = {
-            method: targetMethod, url: targetUrl, headers: headersToSend, params: paramsToSend, data: dataToSend,
+            method: config.metodo.toLowerCase(), url: targetUrl, headers: headersToSend, params: paramsToSend, data: dataToSend,
             responseType: 'arraybuffer', validateStatus: () => true, timeout: 30000,
         };
         const targetResponse = await axios(axiosConfig);
+        const requestEndTime = performance.now(); // Marca tempo depois do axios
+        const requestDuration = Math.round(requestEndTime - requestStartTime);
+        traceLog['req-sent'].status = 'success';
+        traceLog['req-sent'].time = requestDuration; // Adiciona tempo à etapa de envio
 
         console.log(`\n--- [Forwarder Middleware] Resposta do Destino Recebida ---`);
-        console.log(`Status: ${targetResponse.status}`);
+        console.log(`Status: ${targetResponse.status} (${requestDuration}ms)`);
+        // Armazena corpo original (como base64 para segurança e consistência)
+        const originalResponseBody = Buffer.from(targetResponse.data);
+        traceLog['resp-received'] = { status: 'success', time: requestDuration, data: { status: targetResponse.status, headers: targetResponse.headers, originalBodyBase64: originalResponseBody.toString('base64') } }; // Log corpo original em base64
 
-        let responseData = targetResponse.data;
+        // Manipulação da Resposta
+        let responseData = targetResponse.data; // Buffer
         let responseHeaders = { ...targetResponse.headers };
-        // Lógica de drop removida - será feita no script de manipulação de resposta
+        const scriptContext = { responseBody: responseData, responseHeaders: { ...responseHeaders }, sharedContext };
+        const respManipulationStartTime = performance.now();
+        let scriptResult = runScript(config.response_script, scriptContext, 'Manipulador de Resposta');
+        const respManipulationEndTime = performance.now();
+        const respManipulationDuration = Math.round(respManipulationEndTime - respManipulationStartTime);
 
-        const scriptContext = { responseBody: responseData, responseHeaders: { ...responseHeaders }, sharedContext }; // Passa sharedContext
-        let scriptExecutionResult = runScript(config.response_script, scriptContext, 'Manipulador de Resposta');
-
-        // Verifica se houve erro na execução do script
-        if (scriptExecutionResult instanceof Error) {
-             console.error("[Forwarder Middleware] Erro na execução do script de manipulação de resposta:", scriptExecutionResult.message);
-             return res.status(500).json({ error: "Erro interno ao executar o script de manipulação de resposta.", details: scriptExecutionResult.message });
+        if (scriptResult instanceof Error) {
+             traceLog['resp-manipulation'] = { status: 'error', time: respManipulationDuration, data: { message: "Erro interno ao executar script.", error: scriptResult.message } };
+             res.set('X-Forward-Trace', JSON.stringify(traceLog));
+             return res.status(500).json({ error: "Erro interno ao executar o script de manipulação de resposta.", details: scriptResult.message });
         }
-        // Se não houve erro de execução, o resultado é o corpo da resposta (modificado ou não)
-        // O script pode retornar string, Buffer, null, undefined, etc.
-        else if (scriptExecutionResult !== undefined) { // Verifica se o script retornou algo (não undefined)
-             // Compara se o corpo foi modificado (considerando Buffer e outros tipos)
-             const bodyChanged = !Buffer.isBuffer(scriptExecutionResult) || !Buffer.isBuffer(responseData) || Buffer.compare(responseData, scriptExecutionResult) !== 0;
 
-             if (bodyChanged) {
-                 console.log("[Forwarder Middleware] Corpo da resposta modificado pelo script.");
-                 delete responseHeaders['content-length']; // Recalcular se modificado
-             }
-             responseData = scriptExecutionResult; // Usa o resultado do script como novo corpo
+        let finalResponseHeaders = { ...responseHeaders };
+        let bodyModifiedByScript = false;
+        let headersModifiedByScript = false;
+
+        if (typeof scriptResult === 'object' && scriptResult !== null && scriptResult.headers && typeof scriptResult.headers === 'object') {
+            finalResponseHeaders = { ...scriptResult.headers };
+            headersModifiedByScript = JSON.stringify(responseHeaders) !== JSON.stringify(finalResponseHeaders);
+            if (headersModifiedByScript) console.log("[Forwarder Middleware] Headers da resposta modificados pelo script.");
+
+            if (scriptResult.body !== undefined) {
+                 bodyModifiedByScript = !Buffer.isBuffer(scriptResult.body) || !Buffer.isBuffer(responseData) || Buffer.compare(responseData, scriptResult.body) !== 0;
+                 if (bodyModifiedByScript) console.log("[Forwarder Middleware] Corpo da resposta modificado pelo script (via objeto retornado).");
+                 responseData = scriptResult.body;
+            } else {
+                 bodyModifiedByScript = false;
+            }
+            traceLog['resp-manipulation'] = { status: 'success', time: respManipulationDuration, data: { returnType: 'object', bodyModified: bodyModifiedByScript, headersModified: headersModifiedByScript, finalHeaders: finalResponseHeaders } };
+
+        } else if (scriptResult !== undefined && scriptResult !== true) {
+             console.warn("[Forwarder Middleware] Script de resposta não retornou { body, headers }.");
+             bodyModifiedByScript = !Buffer.isBuffer(scriptResult) || !Buffer.isBuffer(responseData) || Buffer.compare(responseData, scriptResult) !== 0;
+              if (bodyModifiedByScript) console.log("[Forwarder Middleware] Corpo da resposta modificado pelo script (retorno direto).");
+             responseData = scriptResult;
+             traceLog['resp-manipulation'] = { status: 'warning', time: respManipulationDuration, data: { returnType: 'direct_body', message: "Script não retornou { body, headers }.", bodyModified: bodyModifiedByScript, finalHeaders: finalResponseHeaders } };
+        } else {
+             bodyModifiedByScript = false;
+             traceLog['resp-manipulation'] = { status: 'success', time: respManipulationDuration, data: { returnType: typeof scriptResult, info: "Nenhuma modificação aplicada pelo script.", finalHeaders: finalResponseHeaders } };
         }
-        // Se scriptExecutionResult for undefined, responseData permanece o original.
 
-        delete responseHeaders['transfer-encoding'];
-        delete responseHeaders['connection'];
-        delete responseHeaders['content-encoding'];
-        delete responseHeaders['content-length'];
+        // Limpeza final dos headers
+        delete finalResponseHeaders['transfer-encoding'];
+        delete finalResponseHeaders['connection'];
+        delete finalResponseHeaders['content-encoding'];
+        if (bodyModifiedByScript) {
+            delete finalResponseHeaders['content-length'];
+        }
 
+        // Envio da Resposta Final
+        const overallEndTime = performance.now();
+        const overallDuration = Math.round(overallEndTime - overallStartTime);
         console.log(`\n--- [Forwarder Middleware] Enviando Resposta ao Cliente ---`);
-        console.log(`Status Final: ${targetResponse.status}`);
-
-        res.status(targetResponse.status).set(responseHeaders).send(responseData);
+        console.log(`Status Final: ${targetResponse.status} (Total: ${overallDuration}ms)`);
+        traceLog['resp-sent'] = { status: 'success', time: Math.round(overallEndTime - respManipulationEndTime), data: { status: targetResponse.status, headers: finalResponseHeaders, totalDuration: overallDuration } };
+        res.set('X-Forward-Trace', JSON.stringify(traceLog));
+        res.status(targetResponse.status).set(finalResponseHeaders).send(responseData);
 
     } catch (error) {
-        console.error(`[Forwarder Middleware] Erro durante o processo de forwarding para ${originalPath}:`, error);
+        const overallEndTime = performance.now();
+        const overallDuration = Math.round(overallEndTime - overallStartTime);
+        console.error(`[Forwarder Middleware] Erro durante o processo de forwarding para ${originalPath} (${overallDuration}ms):`, error);
+        // Garante que traceLog.error exista antes de tentar adicionar dados
+        if (!traceLog.error) traceLog.error = { status: 'error', time: overallDuration, data: {} };
+        traceLog.error.data.message = error.message;
+        traceLog.error.data.stack = error.stack;
+        traceLog.error.data.type = axios.isAxiosError(error) ? 'axios' : 'internal';
+
         if (axios.isAxiosError(error)) {
             const statusCode = error.response?.status || 502;
             const errorData = { error: `Erro ao contatar a API de destino.`, details: error.message, target_url: error.config?.url, target_status: error.response?.status };
+            traceLog.error.data = { ...traceLog.error.data, ...errorData }; // Mescla dados do erro Axios
             console.error("[Forwarder Middleware] Erro Axios:", errorData);
+            res.set('X-Forward-Trace', JSON.stringify(traceLog));
             res.status(statusCode).json(errorData);
         } else {
              console.error("[Forwarder Middleware] Erro Interno:", error.message);
-            res.status(500).json({ error: "Erro interno do servidor durante o forwarding.", details: error.message });
+             res.set('X-Forward-Trace', JSON.stringify(traceLog));
+             res.status(500).json({ error: "Erro interno do servidor durante o forwarding.", details: error.message });
         }
     }
 });
 // --- Fim Middleware de Encaminhamento ---
 
 
-// --- Middleware 404 Personalizado (Captura rotas não encontradas) ---
-// Este middleware só será alcançado se a requisição não corresponder a /api/*
-// e também não corresponder a nenhum forward configurado no middleware anterior.
+// --- Middleware 404 Personalizado ---
 app.use((req, res, next) => {
   console.log(`[404 Handler] Rota não encontrada: ${req.method} ${req.originalUrl}`);
   res.status(404).json({
@@ -310,16 +325,16 @@ app.use((req, res, next) => {
 });
 
 
-// Middleware de tratamento de erros genérico (FINAL)
+// --- Middleware de tratamento de erros genérico (FINAL) ---
 app.use((err, req, res, next) => {
   console.error("[Erro Não Tratado]", err.stack);
-  res.status(500).send('Algo deu muito errado!');
+  const errorResponse = process.env.NODE_ENV === 'production'
+      ? { error: 'Erro interno do servidor.' }
+      : { error: 'Erro interno do servidor.', details: err.message, stack: err.stack };
+  res.status(500).json(errorResponse);
 });
 
 // Iniciar o servidor
 app.listen(PORT, () => {
   console.log(`Backend rodando na porta ${PORT}`);
 });
-
-// Exportar db não é mais necessário aqui se o service o instancia
-// module.exports = { db };

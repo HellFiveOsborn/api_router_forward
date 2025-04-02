@@ -7,8 +7,14 @@
 
 ## Visão Geral do Dashboard
 
-![Dashboard Screenshot](image.png)
-*(Substitua `image.png` pelo caminho correto se a imagem não estiver na raiz)*
+![Dashboard Screenshot](images/image1.png)
+
+<details>
+<summary>🖼️ Clique para ver o Playground</summary>
+
+![Playground Screenshot](images/image2.png)
+
+</details>
 
 ## Principais Funcionalidades
 
@@ -25,6 +31,35 @@
 *   **Contexto Compartilhado:** Passe dados entre os diferentes estágios de execução dos scripts (validação de headers -> validação de parâmetros -> manipulação de resposta) para fluxos de trabalho complexos.
 *   **Autenticação:** Login simples baseado em credenciais para acesso ao dashboard usando JWT.
 *   **Persistência:** As configurações são armazenadas em um banco de dados SQLite local.
+## Fluxo da Requisição (Simplificado)
+
+```mermaid
+graph TD
+    A[Cliente] --> B(Route Forward);
+    B -- "Recebe Requisição" --> C{Middleware Principal};
+    C -- "Busca Config" --> D[DB SQLite];
+    C -- "Valida Headers" --> E{Headers OK?};
+    E -- "Não" --> Z(Bloqueia/Erro 4xx);
+    E -- "Sim" --> F{Valida Params};
+    F -- "Não" --> Z;
+    F -- "Sim" --> G[Monta Req. Destino];
+    G -- "Envia Requisição" --> H(API Destino);
+    H -- "Retorna Resposta" --> C;
+    C -- "Manipula Resposta" --> I{Resposta Modificada?};
+    I -- "Sim/Não" --> J[Envia Resposta Final];
+    J -- "Retorna ao Cliente" --> A;
+
+    subgraph "Scripts Customizáveis"
+        direction LR
+        S1[Validação Headers]
+        S2[Validação Parâmetros]
+        S3[Manipulação Resposta]
+    end
+
+    C --> S1;
+    C --> S2;
+    C --> S3;
+```
 
 ## Estrutura do Projeto
 
@@ -51,7 +86,7 @@
 │   ├── index.html
 │   ├── package.json
 │   └── vite.config.js
-├── image.png           # Screenshot do dashboard (adicione sua imagem aqui)
+├── images/             # Imagens do README
 ├── LICENSE             # Arquivo de licença (MIT)
 └── README.md           # Este arquivo (em pt-BR)
 ```

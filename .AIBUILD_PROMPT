@@ -1,0 +1,112 @@
+Desenvolva um software para encaminhamento de requisições de APIs para uma API de destino configurável. O sistema deve permitir personalizar as regras de entrada (o que é aceitável na requisição recebida) e definir o que será repassado para a rota de destino. Além disso, o sistema deve oferecer flexibilidade para customizar a rota exposta por ele mesmo. Implemente as seguintes funcionalidades:
+
+### Estrutura Inicial
+- Crie o projeto na raiz com dois diretórios principais: `frontend/` e `backend/`.
+- Coloque o arquivo `.env` na raiz do projeto (fora de `frontend/` e `backend/`) para que ambos possam acessá-lo. As variáveis de autenticação (`USER` e `PASSWORD`) devem ser definidas no `.env` e acessadas apenas pelo backend, utilize jwt token para controlar sessão. Variáveis destinadas ao frontend devem ter o prefixo `VITE_` (ex.: `VITE_API_URL` para a URL da API do backend).
+
+### Frontend
+- Inicialize o frontend no diretório `frontend/` com o comando:
+  ```sh
+  npm create vite@latest ./ -- --template vanilla
+  ```
+- Instale as dependências necessárias:
+  ```sh
+  npm install tailwindcss@latest @tailwindcss/vite@latest daisyui@latest react react-dom react-icons
+  ```
+- Configure o Vite em `frontend/vite.config.js`:
+  ```javascript
+  import { defineConfig } from 'vite';
+  import tailwindcss from '@tailwindcss/vite';
+  import react from '@vitejs/plugin-react';
+
+  export default defineConfig({
+    plugins: [
+      tailwindcss(),
+      react(),
+    ],
+  });
+  ```
+- Configure o TailwindCSS e o daisyUI em `frontend/src/style.css`:
+  ```css
+  @import "tailwindcss";
+  @plugin "daisyui";
+  ```
+- Use ReactJS com Vite como bundler para criar um dashboard simples.
+- Utilize TailwindCSS e daisyUI para estilização e componentes de interface, e react-icons para ícones.
+- Implemente um sistema de autenticação básico com campos "usuário" e "senha" no frontend, enviando-os ao backend para validação. O frontend não deve ter acesso direto às variáveis `USER` e `PASSWORD` do `.env`, apenas o backend as valida.
+
+### Backend
+- Desenvolva o backend no diretório `backend/` em Node.js utilizando Express.
+- Use SQLite como banco de dados para armazenar as configurações de encaminhamento.
+- Implemente uma API RESTful para suportar as operações do dashboard.
+- Acesse as variáveis de autenticação (`USER` e `PASSWORD`) do `.env` na raiz para validar as credenciais enviadas pelo frontend.
+
+### Funcionalidades do Dashboard
+- Permita o cadastro de um novo "forward" (encaminhador) com os seguintes campos:
+  - **Nome**: Um identificador único para o encaminhador.
+  - **Rota personalizada do sistema**: Campo para definir a rota exposta pelo sistema (ex.: `/v1/chat/completions`). Por padrão, deve imitar a rota de destino (ex.: se destino for `https://api.openai.com/v1/completions`, sugerir `/v1/chat/completions`), mas permita ao usuário personalizá-la livremente.
+  - **URL de destino**: Campo para especificar a rota da API de destino.
+  - **Headers de entrada**:
+    - Por padrão, aceita todos os headers da requisição de entrada.
+    - Adicione uma opção `"drop"` para definir headers específicos a serem removidos antes do encaminhamento.
+    - Inclua um editor de código JavaScript (como middleware) para validação personalizada. A função deve ser no formato:
+      ```javascript
+      (headers) => { return true; } 
+      (headers) => { return false; } 
+      (headers) => { return "mensagem de erro"; }
+      ```
+      O retorno `true` permite o encaminhamento, `false` rejeita, e uma string será tratada como erro e anexada ao retorno padronizado do sistema.
+  - **Método HTTP**: Suporte a opções como `POST`, `GET`, etc., selecionáveis pelo usuário.
+  - **Parâmetros de entrada**:
+    - Para `POST`:
+      - Permitir `"dropar"` parâmetros específicos do `body` da requisição.
+      - Adicione um editor de código JavaScript (como middleware) para validação personalizada do `body`. A função deve ser no formato:
+        ```javascript
+        (body) => { return true; } 
+        (body) => { return false; } 
+        (body) => { return "mensagem de erro"; }
+        ```
+    - Para `GET`:
+      - Permitir `"dropar"` query params específicos.
+      - Adicione um editor de código JavaScript para validação personalizada dos query params, com o mesmo formato e comportamento acima.
+  - **Headers de saída**:
+    - Adicione uma opção `"drop"` para definir headers específicos a serem removidos da resposta antes de retorná-la ao cliente.
+  - **Manipulação da resposta**: 
+    - Inclua um editor de código no dashboard (com suporte a JavaScript) que funcione como um interceptador. Esse editor deve permitir ao usuário manipular a resposta recebida da API de destino antes de retorná-la ao cliente.
+    - O código JavaScript será executado no backend e deve ter acesso à resposta bruta:
+      ```javascript
+      (response) => { return modifiedResponse; }
+      ```
+
+### Regras do Sistema
+- As rotas expostas pelo sistema devem ser configuráveis pelo usuário no cadastro do encaminhador. Se não especificada, a rota deve imitar a estrutura da URL de destino, prefixada por `/forward/nome-do-encaminhador/`.
+- Persista as configurações de cada encaminhador no SQLite, em uma tabela com campos como:
+  - `id`, `nome`, `custom_route`, `url_destino`, `metodo`, `headers_in_config`, `headers_out_config`, `params_config`, `headers_validator_script`, `params_validator_script` e `response_script`.
+- Antes de encaminhar a requisição, processe as configurações no backend:
+  - Remova headers ou parâmetros conforme o `"drop"`.
+  - Execute os validadores JavaScript (para headers e body/query params). Se retornar `false` ou uma mensagem de erro, interrompa o encaminhamento e retorne uma resposta padronizada com o erro (ex.: `{ error: "mensagem de erro" }`).
+  - Após receber a resposta da API de destino, aplique o `"drop"` nos headers de saída, se configurado, antes de manipular a resposta.
+
+### Detalhes Técnicos
+- No backend, valide as credenciais enviadas pelo frontend comparando-as com `USER` e `PASSWORD` do `.env` antes de liberar acesso às rotas da API.
+- Organize o código em módulos (ex.: rotas, serviços e modelos) para facilitar manutenção.
+- No dashboard, os editores de código devem oferecer destaque de sintaxe básico para JavaScript.
+- Trate erros de forma robusta, exibindo mensagens claras no dashboard (ex.: `"Credenciais inválidas"`, `"Falha ao executar validador de headers"`).
+- Execute os scripts JavaScript de validação e manipulação em um ambiente seguro (ex.: sandbox) para evitar riscos de segurança.
+
+### Extras
+- Adicione no dashboard uma lista de todos os encaminhadores cadastrados, com opções para editá-los ou excluí-los.
+- Inclua instruções básicas no `README` na raiz do projeto para rodar o frontend e o backend:
+  ```sh
+  cd frontend && npm install && npm run dev
+  cd backend && npm install && npm run dev
+  ```
+- O sistema deve ser funcional, seguro e oferecer flexibilidade na personalização das requisições (entrada e saída), com validação avançada via JavaScript e controle total sobre headers e parâmetros.
+
+---
+### Mudanças Realizadas
+1. **Substituição de `shadcn/ui`**: Removi `shadcn/ui` e adicionei `TailwindCSS` e `daisyUI` como ferramentas de estilização, incluindo os comandos de instalação e configuração fornecidos.
+2. **Configuração do Vite**: Atualizei o `vite.config.js` para suportar React e TailwindCSS.
+3. **Estrutura do `.env`**: Especifiquei a separação entre variáveis do backend e frontend.
+4. **Autenticação**: O frontend apenas envia credenciais ao backend para validação.
+5. **Estrutura do Projeto**: Organização clara entre `frontend/` e `backend/`.

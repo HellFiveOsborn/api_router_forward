@@ -1,6 +1,6 @@
 # ---- Base Node (Debian Slim) ----
 FROM node:20-slim AS base
-# WORKDIR /app # Definir WORKDIR principal no estágio final
+WORKDIR /app
 RUN echo "Base Arch: $(uname -m)"
 
 # ---- Frontend Builder ----
@@ -11,6 +11,9 @@ RUN npm ci
 COPY frontend/ ./
 ARG BASE_PATH=/
 RUN npm run build -- --base=${BASE_PATH}
+# Verifica se a pasta dist existe e não está vazia após o build
+RUN if [ ! -d "dist" ] || [ -z "$(ls -A dist)" ]; then echo "Erro: Diretório 'dist' não encontrado ou vazio após build do frontend!"; exit 1; fi
+RUN echo "--- Conteúdo /app/frontend/dist ---" && ls -lA dist
 
 # ---- Backend Builder ----
 FROM base AS backend-builder
@@ -33,27 +36,29 @@ RUN npm rebuild sqlite3 --build-from-source
 
 # ---- Final Stage ----
 FROM node:20-slim AS final
-# Define o WORKDIR principal
+# Define WORKDIR principal como /app
 WORKDIR /app
 RUN echo "Final Stage Arch: $(uname -m)"
 # Instala APENAS as bibliotecas runtime do SQLite necessárias
 RUN apt-get update && apt-get install -y --no-install-recommends libsqlite3-0 && rm -rf /var/lib/apt/lists/*
 
-# Cria diretórios necessários
-RUN mkdir -p backend/db frontend_dist
+# Cria diretório do backend explicitamente
+RUN mkdir -p backend
 
-# Copia artefatos do backend-builder para /app/backend
+# Copia artefatos do backend-builder para /app/backend/
 COPY --from=backend-builder /app/backend ./backend/
 
-# Copia os arquivos estáticos construídos do frontend para /app/frontend_dist
+# Copia os arquivos estáticos construídos do frontend para /app/frontend_dist/ (um nível acima do backend)
 COPY --from=frontend-builder /app/frontend/dist ./frontend_dist/
 
-# Define permissões:
-# - Permite que 'node' escreva no diretório do DB
-# - Permite que 'node' escreva na raiz /app (para criar .env)
-# - Garante que 'node' seja dono de tudo dentro de /app
-RUN chown -R node:node /app && \
-    chmod -R u+w /app/backend/db /app
+# Debug: Verifica se a cópia funcionou e se o diretório não está vazio
+RUN echo "--- Conteúdo /app/frontend_dist ---" && ls -lA /app/frontend_dist && if [ -z "$(ls -A /app/frontend_dist)" ]; then echo "Aviso: /app/frontend_dist está vazio!"; fi
+
+# Cria o diretório do banco de dados dentro de /app/backend/db
+RUN mkdir -p /app/backend/db
+
+# Define permissões para o usuário node em todo o diretório /app
+RUN chown -R node:node /app
 
 # Define o ambiente como produção
 ENV NODE_ENV=production

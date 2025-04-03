@@ -1,5 +1,5 @@
+require('dotenv').config({ path: '../.env' }); // Carrega variáveis do .env na raiz (variáveis de ambiente do sistema têm precedência)
 const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, '../.env') }); // Carrega variáveis do .env na raiz (variáveis de ambiente do sistema têm precedência)
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
@@ -548,7 +548,7 @@ if (fs.existsSync(frontendDistPath)) {
   app.use((req, res, next) => {
       // Verifica novamente se não é API (redundante, mas seguro)
       if (!req.path.startsWith('/api/')) {
-          const indexPath = path.join(frontendDistPath, 'index.html');
+          const indexPath = path.join(frontendDistPath, 'index.html'); // Usa o mesmo frontendDistPath
           if (fs.existsSync(indexPath)) {
               console.log(`[SPA Fallback] Servindo index.html para: ${req.originalUrl}`);
               res.sendFile(indexPath);

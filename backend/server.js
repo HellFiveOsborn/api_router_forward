@@ -165,7 +165,27 @@ app.use(async (req, res, next) => {
 
         // Validação/Modificação de Headers
         let headersToSend = { ...requestHeaders };
-        delete headersToSend['host']; delete headersToSend['connection']; delete headersToSend['content-length'];
+
+        // Lista de headers a serem removidos (lowercase para comparação insensível)
+        const headersToRemove = [
+            'host', 'connection', 'content-length', // Padrão
+            'cdn-loop', // Cloudflare loop detection
+            // Adicionar outros headers específicos de proxy/infraestrutura se necessário
+        ];
+        const prefixesToRemove = [
+            'cf-', // Cloudflare headers
+            'x-forwarded-', // Standard proxy headers
+            'x-real-ip', // Common proxy header
+        ];
+
+        // Remove os headers indesejados
+        for (const header in headersToSend) {
+            const lowerHeader = header.toLowerCase();
+            if (headersToRemove.includes(lowerHeader) || prefixesToRemove.some(prefix => lowerHeader.startsWith(prefix))) {
+                console.log(`[Forwarder Middleware] Removendo header: ${header}`);
+                delete headersToSend[header];
+            }
+        }
         const headerValidationStartTime = performance.now();
         let headerValidationResult = runScript(config.headers_validator_script, { headers: headersToSend, sharedContext }, 'Validador de Headers');
         const headerValidationEndTime = performance.now();

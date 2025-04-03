@@ -262,7 +262,15 @@ app.use(async (req, res, next) => {
 
         console.log(`[Forwarder Middleware] Resposta do Destino Recebida: ${targetResponse.status} (${requestDuration}ms)`);
         const originalResponseBody = Buffer.from(targetResponse.data);
-        traceLog['resp-received'] = { status: 'success', time: requestDuration, data: { status: targetResponse.status, headers: targetResponse.headers, originalBodyBase64: originalResponseBody.toString('base64') } };
+        // --- DEBUG: Log detalhes da resposta recebida do destino ---
+        console.log(`[DEBUG] Target Response Details:`);
+        console.log(`  Status: ${targetResponse.status}`);
+        console.log(`  Headers: ${JSON.stringify(targetResponse.headers, null, 2)}`);
+        // Logar corpo como Base64 para visualização segura de qualquer tipo de dado
+        console.log(`  Body Base64: ${originalResponseBody.toString('base64').substring(0, 200)}... (truncated)`); // Log truncado
+        console.log(`-------------------------------------------------`);
+        // --- FIM DEBUG ---
+        traceLog['resp-received'] = { status: 'success', time: requestDuration, data: { status: targetResponse.status, headers: targetResponse.headers, originalBodyBase64: '[omitted in trace for brevity]' } }; // Omitir corpo completo do trace
 
         // Manipulação da Resposta
         let responseData = targetResponse.data;

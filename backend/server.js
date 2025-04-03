@@ -1,4 +1,4 @@
-require('dotenv').config({ path: '../.env' }); // Carrega variáveis do .env na raiz
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') }); // Carrega variáveis do .env na raiz (variáveis de ambiente do sistema têm precedência)
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');

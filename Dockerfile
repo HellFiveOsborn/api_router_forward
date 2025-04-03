@@ -1,6 +1,6 @@
 # ---- Base Node (Debian Slim) ----
 FROM node:20-slim AS base
-WORKDIR /app
+# WORKDIR /app # Definir WORKDIR principal no estágio final
 RUN echo "Base Arch: $(uname -m)"
 
 # ---- Frontend Builder ----
@@ -26,27 +26,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copia manifests E código primeiro
 COPY backend/package.json backend/package-lock.json* ./
 COPY backend/ ./
-# Instala dependências (usando install em vez de ci)
+# Instala dependências
 RUN npm install
 # Força a recompilação do sqlite3 a partir do código fonte
 RUN npm rebuild sqlite3 --build-from-source
 
 # ---- Final Stage ----
 FROM node:20-slim AS final
-WORKDIR /app/backend
+# Define o WORKDIR principal
+WORKDIR /app
 RUN echo "Final Stage Arch: $(uname -m)"
-# As bibliotecas runtime do SQLite (libsqlite3-0) devem estar presentes
+# Instala APENAS as bibliotecas runtime do SQLite necessárias
+RUN apt-get update && apt-get install -y --no-install-recommends libsqlite3-0 && rm -rf /var/lib/apt/lists/*
 
-# Copia primeiro node_modules e package*.json do builder
-COPY --from=backend-builder /app/backend/node_modules ./node_modules
-COPY --from=backend-builder /app/backend/package.json ./package.json
-COPY --from=backend-builder /app/backend/package-lock.json* ./package-lock.json
+# Cria diretórios necessários
+RUN mkdir -p backend/db frontend_dist
 
-# Copia o restante do código compilado do backend (sem sobrescrever node_modules)
-COPY --from=backend-builder /app/backend ./
+# Copia artefatos do backend-builder para /app/backend
+COPY --from=backend-builder /app/backend ./backend/
 
-# Copia os arquivos estáticos construídos do frontend
-COPY --from=frontend-builder /app/frontend/dist ./frontend_dist
+# Copia os arquivos estáticos construídos do frontend para /app/frontend_dist
+COPY --from=frontend-builder /app/frontend/dist ./frontend_dist/
+
+# Define permissões:
+# - Permite que 'node' escreva no diretório do DB
+# - Permite que 'node' escreva na raiz /app (para criar .env)
+# - Garante que 'node' seja dono de tudo dentro de /app
+RUN chown -R node:node /app && \
+    chmod -R u+w /app/backend/db /app
 
 # Define o ambiente como produção
 ENV NODE_ENV=production
@@ -55,6 +62,9 @@ EXPOSE ${PORT}
 
 # Define usuário não-root para segurança
 USER node
+
+# Define o diretório de trabalho para o comando CMD
+WORKDIR /app/backend
 
 # Comando para iniciar o servidor backend
 CMD ["node", "server.js"]

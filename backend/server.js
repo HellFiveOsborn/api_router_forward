@@ -225,6 +225,8 @@ app.use(async (req, res, next) => {
         traceLog['req-sent'].time = requestDuration;
 
         console.log(`[Forwarder Middleware] Resposta do Destino Recebida: ${targetResponse.status} (${requestDuration}ms)`);
+        // Log dos headers recebidos do destino ANTES de qualquer modificação
+        console.log("[Forwarder Middleware] Headers Recebidos do Destino:", targetResponse.headers);
         const originalResponseBody = Buffer.from(targetResponse.data);
         traceLog['resp-received'] = { status: 'success', time: requestDuration, data: { status: targetResponse.status, headers: targetResponse.headers, originalBodyBase64: originalResponseBody.toString('base64') } };
 
@@ -272,11 +274,20 @@ app.use(async (req, res, next) => {
              traceLog['resp-manipulation'] = { status: 'success', time: respManipulationDuration, data: { returnType: typeof scriptResult, info: "Nenhuma modificação aplicada pelo script.", finalHeaders: finalResponseHeaders } };
         }
 
-        // Limpeza final dos headers
-        delete finalResponseHeaders['transfer-encoding'];
-        delete finalResponseHeaders['connection'];
-        delete finalResponseHeaders['content-encoding'];
+        // Limpeza final dos headers - Remover headers que podem causar problemas com proxies/Cloudflare
+        console.log("[Forwarder Middleware] Limpando headers da resposta final...");
+        delete finalResponseHeaders['transfer-encoding']; // Já removido
+        delete finalResponseHeaders['connection'];        // Já removido
+        delete finalResponseHeaders['content-encoding'];  // Já removido
+        delete finalResponseHeaders['keep-alive'];
+        delete finalResponseHeaders['strict-transport-security'];
+        delete finalResponseHeaders['content-security-policy'];
+        delete finalResponseHeaders['public-key-pins'];
+        delete finalResponseHeaders['expect-ct'];
+        delete finalResponseHeaders['x-frame-options']; // Cloudflare pode adicionar o seu
+        // Remover content-length se o corpo foi modificado para evitar inconsistências
         if (bodyModifiedByScript) {
+            console.log("[Forwarder Middleware] Removendo content-length pois o corpo foi modificado.");
             delete finalResponseHeaders['content-length'];
         }
 

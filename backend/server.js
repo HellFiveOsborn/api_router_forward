@@ -1,10 +1,10 @@
+const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') }); // Carrega variáveis do .env na raiz (variáveis de ambiente do sistema têm precedência)
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
 const fs = require('fs');
 const axios = require('axios'); // Importar axios
 const vm = require('vm'); // Importar vm

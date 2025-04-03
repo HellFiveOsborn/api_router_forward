@@ -9,7 +9,15 @@ WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm ci
 COPY frontend/ ./
+# Declara os argumentos que podem ser passados pelo docker-compose build
 ARG BASE_PATH=/
+ARG VITE_API_URL=/api # Define um padrão caso não seja passado
+# Define as variáveis de ambiente DENTRO deste estágio de build
+# usando os valores dos ARGs (passados ou padrão)
+ENV VITE_API_URL=${VITE_API_URL}
+ENV BASE_PATH=${BASE_PATH}
+# Executa o build (Vite usará VITE_API_URL do ambiente)
+# Executa o build (Vite usará VITE_API_URL e BASE_PATH do ambiente do builder)
 RUN npm run build -- --base=${BASE_PATH}
 # Verifica se o index.html existe no build
 RUN if [ ! -f "dist/index.html" ]; then echo "Erro: Arquivo 'dist/index.html' não encontrado após build do frontend!"; exit 1; fi

@@ -6,13 +6,20 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # Define o BASE_PATH como '/' para o build do Vite,
-        # já que o backend servirá tudo na raiz.
-        BASE_PATH: /
+        # Passa variáveis do .env como argumentos de build para o Dockerfile
+        # O Docker Compose substitui ${VAR:-default} pelo valor da variável de ambiente
+        # ou usa o default se a variável não estiver definida no ambiente onde o compose roda.
+        # Nota: Estes são lidos do ambiente do HOST ou do .env pelo Docker Compose,
+        # NÃO do ambiente interno do container durante o build.
+        BASE_PATH: ${BASE_PATH:-/}
+        # Define o VITE_API_URL para o build do frontend.
+        # Use '/api' se o backend sempre servir na mesma origem.
+        # Use a URL completa se forem origens diferentes ou se preferir explícito.
+        VITE_API_URL: ${VITE_API_URL:-/api}
     container_name: route_forward_app
     restart: unless-stopped
     env_file:
-      - .env # Carrega variáveis de ambiente do .env para o runtime
+      - .env # Carrega variáveis de ambiente do .env para o RUNTIME do container
     ports:
       # Mapeia apenas a porta do backend (que serve API e Frontend)
       - "3001:3001"

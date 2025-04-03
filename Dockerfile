@@ -11,9 +11,8 @@ RUN npm ci
 COPY frontend/ ./
 ARG BASE_PATH=/
 RUN npm run build -- --base=${BASE_PATH}
-# Verifica se a pasta dist existe e não está vazia após o build
-RUN if [ ! -d "dist" ] || [ -z "$(ls -A dist)" ]; then echo "Erro: Diretório 'dist' não encontrado ou vazio após build do frontend!"; exit 1; fi
-RUN echo "--- Conteúdo /app/frontend/dist ---" && ls -lA dist
+# Verifica se o index.html existe no build
+RUN if [ ! -f "dist/index.html" ]; then echo "Erro: Arquivo 'dist/index.html' não encontrado após build do frontend!"; exit 1; fi
 
 # ---- Backend Builder ----
 FROM base AS backend-builder
@@ -26,39 +25,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     g++ \
     libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
-# Copia manifests E código primeiro
+# Copia manifests
 COPY backend/package.json backend/package-lock.json* ./
+# Instala dependências usando CI
+RUN npm ci
+# Copia o código restante
 COPY backend/ ./
-# Instala dependências
-RUN npm install
 # Força a recompilação do sqlite3 a partir do código fonte
 RUN npm rebuild sqlite3 --build-from-source
 
 # ---- Final Stage ----
 FROM node:20-slim AS final
-# Define WORKDIR principal como /app
-WORKDIR /app
+WORKDIR /app/backend
 RUN echo "Final Stage Arch: $(uname -m)"
 # Instala APENAS as bibliotecas runtime do SQLite necessárias
 RUN apt-get update && apt-get install -y --no-install-recommends libsqlite3-0 && rm -rf /var/lib/apt/lists/*
 
-# Cria diretório do backend explicitamente
-RUN mkdir -p backend
+# Copia artefatos do backend-builder para o WORKDIR atual (/app/backend)
+COPY --from=backend-builder /app/backend .
 
-# Copia artefatos do backend-builder para /app/backend/
-COPY --from=backend-builder /app/backend ./backend/
+# Cria o diretório de destino para o frontend DENTRO do WORKDIR atual (/app/backend)
+RUN mkdir -p frontend_dist
 
-# Copia os arquivos estáticos construídos do frontend para /app/frontend_dist/ (um nível acima do backend)
-COPY --from=frontend-builder /app/frontend/dist ./frontend_dist/
+# Copia o CONTEÚDO de /app/frontend/dist para ./frontend_dist/
+COPY --from=frontend-builder /app/frontend/dist/ ./frontend_dist/
 
-# Debug: Verifica se a cópia funcionou e se o diretório não está vazio
-RUN echo "--- Conteúdo /app/frontend_dist ---" && ls -lA /app/frontend_dist && if [ -z "$(ls -A /app/frontend_dist)" ]; then echo "Aviso: /app/frontend_dist está vazio!"; fi
+# Verifica se a cópia funcionou e se o diretório e o index.html existem
+RUN if [ ! -d "frontend_dist" ] || [ ! -f "frontend_dist/index.html" ]; then echo "Erro: Diretório 'frontend_dist' ou 'frontend_dist/index.html' não encontrado após a cópia!"; exit 1; fi
 
-# Cria o diretório do banco de dados dentro de /app/backend/db
-RUN mkdir -p /app/backend/db
+# Cria o diretório do banco de dados dentro de ./db
+RUN mkdir -p db
 
-# Define permissões para o usuário node em todo o diretório /app
-RUN chown -R node:node /app
+# Define permissões para o usuário node no diretório WORKDIR atual (/app/backend)
+RUN chown -R node:node /app/backend
 
 # Define o ambiente como produção
 ENV NODE_ENV=production
@@ -68,8 +67,7 @@ EXPOSE ${PORT}
 # Define usuário não-root para segurança
 USER node
 
-# Define o diretório de trabalho para o comando CMD
-WORKDIR /app/backend
+# WORKDIR já é /app/backend
 
-# Comando para iniciar o servidor backend
-CMD ["node", "server.js"]
+# Comando para iniciar o servidor backend, com um ls antes para depuração final
+CMD ls -lA /app/backend && echo "--- Iniciando Node ---" && node server.js

@@ -535,7 +535,8 @@ app.use(async (req, res, next) => {
 
 // --- Servir Frontend Estático e SPA Fallback ---
 // Deve vir DEPOIS da API e do Forwarder
-const frontendDistPath = path.join(__dirname, 'frontend_dist');
+const frontendDistPath = path.join(__dirname, 'frontend_dist'); // Usar join relativo ao diretório atual
+console.log(`[Server] Verificando existência de frontend em: ${frontendDistPath}`); // Log para depuração
 if (fs.existsSync(frontendDistPath)) {
   console.log(`Servindo arquivos estáticos do frontend de: ${frontendDistPath}`);
   // Serve arquivos estáticos
@@ -548,7 +549,7 @@ if (fs.existsSync(frontendDistPath)) {
   app.use((req, res, next) => {
       // Verifica novamente se não é API (redundante, mas seguro)
       if (!req.path.startsWith('/api/')) {
-          const indexPath = path.join(frontendDistPath, 'index.html'); // Usa o mesmo frontendDistPath
+          const indexPath = path.resolve(frontendDistPath, 'index.html'); // Usar resolve aqui também
           if (fs.existsSync(indexPath)) {
               console.log(`[SPA Fallback] Servindo index.html para: ${req.originalUrl}`);
               res.sendFile(indexPath);

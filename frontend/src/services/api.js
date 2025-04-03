@@ -1,6 +1,6 @@
 // frontend/src/services/api.js
 let API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/'; // Usa a variável do .env ou um padrão
-API_URL = API_URL.endsWith('/') ? `${API_URL}api/` : `${API_URL}/api/`; // Certifica-se de que a URL termina com uma barra
+API_URL = API_URL.endsWith('/') ? `${API_URL}api` : `${API_URL}/api`; // Certifica-se de que a URL termina com uma barra
 
 const getAuthToken = () => {
   // Idealmente, verificar se o token não expirou aqui também, se possível

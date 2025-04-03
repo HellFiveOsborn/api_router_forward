@@ -212,7 +212,23 @@ app.use(async (req, res, next) => {
 
         // Envio para API de Destino
         console.log(`[Forwarder Middleware] Encaminhando para Destino: ${targetUrl}`);
-        traceLog['req-sent'] = { status: 'pending', data: { url: targetUrl, method: config.metodo.toLowerCase(), headers: headersToSend, body: dataToSend, queryParams: paramsToSend } };
+        // --- DEBUG: Log detalhes da requisição para o destino ---
+        console.log(`[DEBUG] Axios Request Config:`);
+        console.log(`  Method: ${config.metodo.toLowerCase()}`);
+        console.log(`  URL: ${targetUrl}`);
+        console.log(`  Headers: ${JSON.stringify(headersToSend, null, 2)}`);
+        console.log(`  Query Params: ${JSON.stringify(paramsToSend, null, 2)}`);
+        // Logar o corpo apenas se existir e for razoavelmente pequeno (ou um tipo específico)
+        if (dataToSend && typeof dataToSend !== 'object') { // Evita logar buffers grandes diretamente
+             console.log(`  Body (dataToSend): ${JSON.stringify(dataToSend)}`);
+        } else if (dataToSend) {
+             console.log(`  Body (dataToSend): [Object/Buffer]`); // Indica que há um corpo, mas não loga o conteúdo completo
+        } else {
+             console.log(`  Body (dataToSend): null`);
+        }
+        console.log(`-------------------------------------------------`);
+        // --- FIM DEBUG ---
+        traceLog['req-sent'] = { status: 'pending', data: { url: targetUrl, method: config.metodo.toLowerCase(), headers: headersToSend, body: '[omitted in trace for brevity]', queryParams: paramsToSend } }; // Omitir corpo completo do trace
         const requestStartTime = performance.now();
         const axiosConfig = {
             method: config.metodo.toLowerCase(), url: targetUrl, headers: headersToSend, params: paramsToSend, data: dataToSend,
@@ -225,8 +241,6 @@ app.use(async (req, res, next) => {
         traceLog['req-sent'].time = requestDuration;
 
         console.log(`[Forwarder Middleware] Resposta do Destino Recebida: ${targetResponse.status} (${requestDuration}ms)`);
-        // Log dos headers recebidos do destino ANTES de qualquer modificação
-        console.log("[Forwarder Middleware] Headers Recebidos do Destino:", targetResponse.headers);
         const originalResponseBody = Buffer.from(targetResponse.data);
         traceLog['resp-received'] = { status: 'success', time: requestDuration, data: { status: targetResponse.status, headers: targetResponse.headers, originalBodyBase64: originalResponseBody.toString('base64') } };
 
@@ -274,20 +288,11 @@ app.use(async (req, res, next) => {
              traceLog['resp-manipulation'] = { status: 'success', time: respManipulationDuration, data: { returnType: typeof scriptResult, info: "Nenhuma modificação aplicada pelo script.", finalHeaders: finalResponseHeaders } };
         }
 
-        // Limpeza final dos headers - Remover headers que podem causar problemas com proxies/Cloudflare
-        console.log("[Forwarder Middleware] Limpando headers da resposta final...");
-        delete finalResponseHeaders['transfer-encoding']; // Já removido
-        delete finalResponseHeaders['connection'];        // Já removido
-        delete finalResponseHeaders['content-encoding'];  // Já removido
-        delete finalResponseHeaders['keep-alive'];
-        delete finalResponseHeaders['strict-transport-security'];
-        delete finalResponseHeaders['content-security-policy'];
-        delete finalResponseHeaders['public-key-pins'];
-        delete finalResponseHeaders['expect-ct'];
-        delete finalResponseHeaders['x-frame-options']; // Cloudflare pode adicionar o seu
-        // Remover content-length se o corpo foi modificado para evitar inconsistências
+        // Limpeza final dos headers
+        delete finalResponseHeaders['transfer-encoding'];
+        delete finalResponseHeaders['connection'];
+        delete finalResponseHeaders['content-encoding'];
         if (bodyModifiedByScript) {
-            console.log("[Forwarder Middleware] Removendo content-length pois o corpo foi modificado.");
             delete finalResponseHeaders['content-length'];
         }
 

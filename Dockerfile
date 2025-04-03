@@ -36,28 +36,38 @@ RUN npm rebuild sqlite3 --build-from-source
 
 # ---- Final Stage ----
 FROM node:20-slim AS final
-WORKDIR /app/backend
+WORKDIR /app
 RUN echo "Final Stage Arch: $(uname -m)"
 # Instala APENAS as bibliotecas runtime do SQLite necessárias
 RUN apt-get update && apt-get install -y --no-install-recommends libsqlite3-0 && rm -rf /var/lib/apt/lists/*
 
-# Copia artefatos do backend-builder para o WORKDIR atual (/app/backend)
-COPY --from=backend-builder /app/backend .
+# Cria diretório do backend explicitamente
+RUN mkdir -p backend
 
-# Cria o diretório de destino para o frontend DENTRO do WORKDIR atual (/app/backend)
-RUN mkdir -p frontend_dist
+# Copia artefatos do backend-builder para /app/backend/
+COPY --from=backend-builder /app/backend ./backend/
 
-# Copia o CONTEÚDO de /app/frontend/dist para ./frontend_dist/
-COPY --from=frontend-builder /app/frontend/dist/ ./frontend_dist/
+# Cria o diretório de destino para o frontend DENTRO de /app/backend
+RUN mkdir -p /app/backend/frontend_dist
+
+# Copia o CONTEÚDO de /app/frontend/dist para ./backend/frontend_dist/
+COPY --from=frontend-builder /app/frontend/dist/ ./backend/frontend_dist/
 
 # Verifica se a cópia funcionou e se o diretório e o index.html existem
-RUN if [ ! -d "frontend_dist" ] || [ ! -f "frontend_dist/index.html" ]; then echo "Erro: Diretório 'frontend_dist' ou 'frontend_dist/index.html' não encontrado após a cópia!"; exit 1; fi
+RUN if [ ! -d "/app/backend/frontend_dist" ] || [ ! -f "/app/backend/frontend_dist/index.html" ]; then echo "Erro: Diretório '/app/backend/frontend_dist' ou 'index.html' não encontrado após a cópia!"; exit 1; fi
 
-# Cria o diretório do banco de dados dentro de ./db
-RUN mkdir -p db
+# Cria o diretório do banco de dados dentro de ./backend/db
+RUN mkdir -p /app/backend/db
 
-# Define permissões para o usuário node no diretório WORKDIR atual (/app/backend)
-RUN chown -R node:node /app/backend
+# Copia o script de entrypoint para /app
+COPY entrypoint.sh /app/entrypoint.sh
+
+# Define permissões:
+# - Permite que 'node' escreva no diretório do DB
+# - Permite que 'node' escreva na raiz /app (para criar .env)
+# - Garante que 'node' seja dono de tudo dentro de /app
+# - Torna o entrypoint executável
+RUN chown -R node:node /app && chmod +x /app/entrypoint.sh
 
 # Define o ambiente como produção
 ENV NODE_ENV=production
@@ -67,7 +77,12 @@ EXPOSE ${PORT}
 # Define usuário não-root para segurança
 USER node
 
-# WORKDIR já é /app/backend
+# Define o diretório de trabalho final (onde o entrypoint espera estar)
+WORKDIR /app
 
-# Comando para iniciar o servidor backend, com um ls antes para depuração final
-CMD ls -lA /app/backend && echo "--- Iniciando Node ---" && node server.js
+# Define o Entrypoint
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+# Define o Comando padrão (passado como argumento para o entrypoint)
+# O entrypoint fará 'cd backend' antes de executar isso
+CMD ["node", "server.js"]

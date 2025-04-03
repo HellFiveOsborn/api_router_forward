@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Define o BASE_PATH como '/' para o build do Vite,
+        # já que o backend servirá tudo na raiz.
+        BASE_PATH: /
+    container_name: route_forward_app
+    restart: unless-stopped
+    env_file:
+      - .env # Carrega variáveis de ambiente do .env para o runtime
+    ports:
+      # Mapeia apenas a porta do backend (que serve API e Frontend)
+      - "3001:3001"
+    volumes:
+      # Mapeia o diretório do banco de dados para persistência local
+      - db_data:/app/backend/db
+
+volumes:
+  # Define o volume nomeado para persistir os dados do SQLite
+  db_data:

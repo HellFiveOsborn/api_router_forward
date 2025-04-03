@@ -1,0 +1,47 @@
+{
+  "name": "Route Forward Dev Container",
+  // Usa o docker-compose.yml existente para definir o ambiente.
+  "dockerComposeFile": "../docker-compose.yml",
+
+  // O serviço dentro do docker-compose.yml que o VS Code deve usar.
+  "service": "app",
+
+  // A pasta do projeto dentro do container.
+  "workspaceFolder": "/app",
+
+  // Portas a serem encaminhadas do container para a máquina local.
+  "forwardPorts": [
+    3001, // Porta do backend (que serve API e frontend buildado)
+    5173  // Porta comum para o servidor de dev do Vite (caso seja executado manualmente)
+  ],
+
+  // Extensões recomendadas do VS Code para este projeto.
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",       // Linter ESLint
+        "esbenp.prettier-vscode",       // Formatador Prettier
+        "bradlc.vscode-tailwindcss",    // IntelliSense para Tailwind CSS
+        "ms-azuretools.vscode-docker",  // Integração Docker
+        "ms-vscode-remote.remote-containers", // Essencial para Dev Containers
+        "humao.rest-client",            // Cliente REST para testar APIs
+        "alexcvzz.vscode-sqlite",       // Visualizador/Editor SQLite
+        "mhutchie.git-graph",           // Visualizador de histórico Git
+        "eamodio.gitlens"               // Superpoderes Git
+      ],
+      // Configurações opcionais do VS Code dentro do container
+      "settings": {
+        "terminal.integrated.shell.linux": "/bin/ash" // Shell padrão no Alpine
+      }
+    }
+  },
+
+  // Define o usuário com o qual os comandos serão executados dentro do container.
+  // A imagem node:alpine usa 'node' por padrão.
+  "remoteUser": "node"
+
+  // Comandos opcionais do ciclo de vida:
+  // "postCreateCommand": "cd backend && npm install && cd ../frontend && npm install", // Executa após a criação do container
+  // "postStartCommand": "echo 'Container iniciado!'", // Executa toda vez que o container inicia
+  // "postAttachCommand": "echo 'VS Code conectado!'" // Executa toda vez que o VS Code conecta
+}

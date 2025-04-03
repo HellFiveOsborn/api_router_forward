@@ -1,0 +1,23 @@
+# Configuração para Nixpacks (https://nixpacks.com/)
+
+# Define os provedores a serem usados. 'docker' indica para usar o Dockerfile existente.
+providers = ["docker"]
+
+# Define a fase de build (opcional, pois estamos usando o Dockerfile)
+# [build]
+# installCmd = "(cd backend && npm install --omit=dev) && (cd frontend && npm install && npm run build)"
+# buildCmd = "" # O build principal é feito no Dockerfile
+
+# Define a fase de início
+[start]
+# O comando para iniciar a aplicação.
+# Corresponde ao CMD no Dockerfile.
+# Nixpacks pode inferir isso do Dockerfile, mas é bom ser explícito.
+startCmd = "cd backend && node server.js"
+
+# Variáveis de ambiente que podem ser necessárias durante o build ou runtime
+# Nixpacks geralmente as obtém do ambiente da plataforma de deploy.
+# [variables]
+# NODE_ENV = "production"
+# PORT = "3001"
+# BASE_PATH = "/" # Defina o caminho base aqui ou na plataforma de deploy

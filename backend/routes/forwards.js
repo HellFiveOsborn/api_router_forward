@@ -18,6 +18,31 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/forwards/export/:id - Exportar configuração de um forward específico
+router.get('/export/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) {
+      return res.status(400).json({ message: "ID inválido." });
+    }
+    
+    const forward = await forwardService.getById(id);
+    if (!forward) {
+      return res.status(404).json({ message: `Forward com ID ${id} não encontrado.` });
+    }
+    
+    // Configurar headers para download de arquivo
+    res.setHeader('Content-Disposition', `attachment; filename=forward_${id}_${forward.slug || 'config'}.json`);
+    res.setHeader('Content-Type', 'application/json');
+    
+    // Enviar os dados como JSON formatado
+    res.json(forward);
+  } catch (error) {
+    console.error(`Erro em GET /api/forwards/export/${req.params.id}:`, error);
+    res.status(500).json({ message: String(error) || "Erro ao exportar configuração." });
+  }
+});
+
 // GET /api/forwards/:id - Obter um forward específico
 router.get('/:id', async (req, res) => {
   try {

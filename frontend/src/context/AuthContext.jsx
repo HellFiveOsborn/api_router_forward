@@ -10,35 +10,39 @@ export const AuthProvider = ({ children }) => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [loadingAuth, setLoadingAuth] = useState(true); // Estado para verificar auth inicial
 
+  // Função de logout - Definida primeiro para evitar problemas de referência
+  const logout = useCallback(() => {
+    apiLogout(); // Limpa o token do localStorage
+    setIsAuthenticated(false); // Atualiza o estado
+    // Opcional: redirecionar para a tela de login aqui ou no componente que chama logout
+  }, []); // Removendo dependências para evitar referência circular
+
+  // Removido o handleAuthError para evitar problemas de referência circular
+
   // Verifica o token ao carregar o app
   useEffect(() => {
-    const verifyAuth = () => {
-        console.log("Verificando autenticação inicial...");
+    const verifyAuth = async () => {
         try {
             const hasToken = checkAuth(); // Verifica se existe um token (não valida expiração aqui)
-            console.log("Token encontrado:", hasToken);
             setIsAuthenticated(hasToken);
         } catch (error) {
             console.error("Erro ao verificar autenticação inicial:", error);
             setIsAuthenticated(false);
-            apiLogout(); // Limpa token inválido se houver erro na verificação (embora checkAuth não faça chamada API)
+            // Usar apiLogout diretamente em vez de logout para evitar referência circular
+            apiLogout(); // Limpa token inválido se houver erro na verificação
         } finally {
             setLoadingAuth(false); // Finaliza a verificação inicial
-            console.log("Verificação inicial concluída. Autenticado:", isAuthenticated);
         }
     };
     verifyAuth();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Executa apenas uma vez na montagem
+  }, []); // Não precisa de dependências, pois é executado apenas uma vez na montagem
 
   // Função de login
   const login = useCallback(async (username, password) => {
-    console.log("Tentando login...");
     setLoadingAuth(true); // Pode usar um loading específico para login se preferir
     try {
       const data = await apiLogin(username, password); // Chama a API de login
       if (data && data.token) {
-        console.log("Login bem-sucedido, token recebido.");
         setIsAuthenticated(true); // Atualiza o estado
         // O token já foi salvo no localStorage pela função apiLogin
         return true; // Indica sucesso
@@ -50,22 +54,33 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error("Falha no login (AuthContext):", error);
       setIsAuthenticated(false);
+      // Usar apiLogout diretamente em vez de logout para evitar referência circular
       apiLogout(); // Garante que qualquer token antigo seja limpo
       throw error; // Re-lança o erro para o componente Login tratar (exibir mensagem)
     } finally {
         setLoadingAuth(false);
-        console.log("Tentativa de login finalizada.");
     }
-  }, []);
+  }, [setIsAuthenticated, setLoadingAuth]); // Não incluir logout nas dependências
 
-  // Função de logout
-  const logout = useCallback(() => {
-    console.log("Executando logout...");
-    apiLogout(); // Limpa o token do localStorage
-    setIsAuthenticated(false); // Atualiza o estado
-    // Opcional: redirecionar para a tela de login aqui ou no componente que chama logout
-    console.log("Logout concluído.");
-  }, []);
+  // Nota: A função de logout foi definida no início do componente
+
+  // Listener para erros de autenticação vindos da API
+  useEffect(() => {
+    
+    // Função inline para evitar dependência de handleAuthError
+    const authErrorHandler = () => {
+      console.warn("AuthContext: Evento 'auth-error' recebido. Executando logout.");
+      apiLogout(); // Limpa o token do localStorage diretamente
+      setIsAuthenticated(false); // Atualiza o estado
+    };
+    
+    document.addEventListener('auth-error', authErrorHandler);
+
+    // Cleanup: remove o listener quando o componente desmontar
+    return () => {
+      document.removeEventListener('auth-error', authErrorHandler);
+    };
+  }, []); // Sem dependências externas
 
   // Valor fornecido pelo contexto
   const value = {
@@ -75,9 +90,9 @@ export const AuthProvider = ({ children }) => {
     logout,
   };
 
-   // Log de mudança de estado para depuração
-   useEffect(() => {
-    console.log("Estado de autenticação mudou:", isAuthenticated);
+  // Log de mudança de estado para depuração
+  useEffect(() => {
+    // Agora podemos logar com segurança o estado atual
   }, [isAuthenticated]);
 
   return (

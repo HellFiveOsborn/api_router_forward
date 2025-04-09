@@ -72,9 +72,9 @@ const apiFetch = async (endpoint, options = {}) => {
       error.data = data; // Anexa dados adicionais do erro, se houver
       // Se for 401 ou 403 (não autorizado/token inválido/expirado), limpar o token local pode ser útil
       if (response.status === 401 || response.status === 403) {
-          console.log("Token inválido ou expirado detectado. Limpando token local.");
+          console.log("Token inválido ou expirado detectado. Limpando token local e disparando evento auth-error.");
           setAuthToken(null);
-          // Opcional: Redirecionar para login ou disparar evento global
+          window.dispatchEvent(new Event('auth-error')); // Dispara o evento global
       }
       throw error;
     }
@@ -143,6 +143,55 @@ export const deleteForward = (id) => {
   return apiFetch(`/forwards/${id}`, {
     method: 'DELETE',
   });
+};
+
+export const exportForwardConfig = async (id) => {
+  try {
+    // Usar apiFetch para obter os dados com autenticação adequada
+    const data = await apiFetch(`/forwards/export/${id}`);
+    
+    // Criar um blob com os dados JSON formatados
+    const jsonString = JSON.stringify(data, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    
+    // Criar URL para o blob
+    const url = URL.createObjectURL(blob);
+    
+    // Criar um link temporário para download
+    const link = document.createElement('a');
+    link.href = url;
+    const fileName = `forward_${id}_${data.slug || 'config'}.json`;
+    link.setAttribute('download', fileName);
+    
+    // Simular clique para iniciar o download
+    document.body.appendChild(link);
+    link.click();
+    
+    // Limpar
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    return true;
+  } catch (error) {
+    console.error(`Erro ao exportar configuração do forward ${id}:`, error);
+    throw error;
+  }
+};
+
+export const importForwardConfig = async (configData, isNew = true, forwardId = null) => {
+  try {
+    // Se isNew for true, cria um novo forward com os dados importados
+    // Se isNew for false, atualiza um forward existente com os dados importados
+    const endpoint = isNew ? '/forwards/import' : `/forwards/import/${forwardId}`;
+    
+    return await apiFetch(endpoint, {
+      method: 'POST',
+      body: JSON.stringify(configData),
+    });
+  } catch (error) {
+    console.error(`Erro ao importar configuração do forward:`, error);
+    throw error;
+  }
 };
 
 // Verifica se o token atual ainda é válido (exemplo básico, não verifica expiração real sem decodificar)

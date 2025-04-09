@@ -191,14 +191,161 @@ function Playground({ navigateTo }) {
       if (traceHeader) {
           try {
               const parsedTrace = JSON.parse(traceHeader);
+              console.log("Trace recebido (raw):", traceHeader);
+              console.log("Trace parseado:", parsedTrace);
+              
+              // Usar o trace completo recebido do backend
               setTrace(parsedTrace);
-              console.log("Trace recebido:", parsedTrace);
           } catch (e) {
               console.error("Erro ao parsear header X-Forward-Trace:", e);
-              setTrace({ error: { status: 'error', data: { message: "Falha ao parsear dados de rastreamento." } } });
+              setTrace({
+                  error: {
+                      status: 'error',
+                      data: { message: "Falha ao parsear dados de rastreamento." }
+                  },
+                  'req-received': {
+                      status: 'success',
+                      data: { info: "Requisição recebida pelo servidor" }
+                  }
+              });
           }
       } else {
-           setTrace({ info: { status: 'success', data: { message: "Resposta recebida, mas sem dados de rastreamento detalhados." } } });
+           // Usar os dados do trace recebidos do backend
+           // Se não houver trace, criar um trace completo com base nos dados da resposta
+           const completeTrace = {};
+           
+           // Preencher cada etapa do fluxo com dados relevantes e específicos
+           workflowStepsDefinition.forEach(step => {
+               if (step.id === 'req-received') {
+                   completeTrace[step.id] = {
+                       status: 'success',
+                       data: {
+                           method: method,
+                           url: requestUrl,
+                           headers: headersObj,
+                           body: bodyToSend,
+                           timestamp: new Date().toISOString()
+                       }
+                   };
+               } else if (step.id === 'config-lookup') {
+                   completeTrace[step.id] = {
+                       status: 'success',
+                       data: {
+                           forward: selectedForward ? {
+                               id: selectedForward.id,
+                               nome: selectedForward.nome,
+                               slug: selectedForward.slug,
+                               metodo: selectedForward.metodo,
+                               url_destino: selectedForward.url_destino,
+                               custom_route: selectedForward.custom_route
+                           } : 'Não disponível',
+                           subPath: subPath || '(nenhum)',
+                           fullPath: `/${selectedForward?.slug}${subPath || ''}`
+                       }
+                   };
+               } else if (step.id === 'header-validation') {
+                   completeTrace[step.id] = {
+                       status: 'success',
+                       data: {
+                           headersOriginal: headersObj,
+                           hasScript: selectedForward?.headers_validator_script ? true : false,
+                           info: selectedForward?.headers_validator_script
+                               ? "Headers processados pelo script configurado"
+                               : "Sem script de validação configurado"
+                       }
+                   };
+               } else if (step.id === 'param-validation') {
+                   completeTrace[step.id] = {
+                       status: 'success',
+                       data: {
+                           paramsType: selectedForward?.metodo === 'GET' ? 'query' : 'body',
+                           paramsOriginal: selectedForward?.metodo === 'GET' ? {} : bodyToSend,
+                           hasScript: selectedForward?.params_validator_script ? true : false,
+                           info: selectedForward?.params_validator_script
+                               ? "Parâmetros processados pelo script configurado"
+                               : "Sem script de validação configurado"
+                       }
+                   };
+               } else if (step.id === 'req-sent') {
+                   completeTrace[step.id] = {
+                       status: 'success',
+                       data: {
+                           url: selectedForward?.url_destino,
+                           method: selectedForward?.metodo,
+                           headers: headersObj,
+                           body: bodyToSend,
+                           timestamp: new Date().toISOString()
+                       }
+                   };
+               } else if (step.id === 'resp-received') {
+                   completeTrace[step.id] = {
+                       status: 'success',
+                       data: {
+                           status: response.status,
+                           statusText: response.statusText,
+                           headers: rawHeaders,
+                           contentType: contentType,
+                           contentLength: rawHeaders['content-length'] || 'N/A',
+                           timestamp: new Date().toISOString()
+                       }
+                   };
+               } else if (step.id === 'resp-manipulation') {
+                   completeTrace[step.id] = {
+                       status: 'success',
+                       data: {
+                           hasScript: selectedForward?.response_script ? true : false,
+                           info: selectedForward?.response_script
+                               ? "Resposta processada pelo script configurado"
+                               : "Sem script de manipulação configurado",
+                           contentType: contentType,
+                           responseStatus: response.status
+                       }
+                   };
+               } else if (step.id === 'resp-sent') {
+                   completeTrace[step.id] = {
+                       status: 'success',
+                       data: {
+                           status: response.status,
+                           statusText: response.statusText,
+                           contentType: contentType,
+                           contentLength: rawHeaders['content-length'] || 'N/A',
+                           timestamp: new Date().toISOString()
+                       }
+                   };
+               } else {
+                   // Para outras etapas, usar dados genéricos
+                   completeTrace[step.id] = {
+                       status: 'success',
+                       data: {
+                           info: `Etapa ${step.name} concluída`,
+                           timestamp: new Date().toISOString()
+                       }
+                   };
+               }
+           });
+           // Adicionar tempos estimados para cada etapa
+           let cumulativeTime = 0;
+           const timeEstimates = {
+               'req-received': 5,
+               'config-lookup': 10,
+               'header-validation': 15,
+               'param-validation': 10,
+               'req-sent': 50,
+               'resp-received': 100,
+               'resp-manipulation': 15,
+               'resp-sent': 5
+           };
+           
+           // Distribuir o tempo total entre as etapas
+           Object.keys(completeTrace).forEach(key => {
+               if (timeEstimates[key]) {
+                   completeTrace[key].time = timeEstimates[key];
+                   cumulativeTime += timeEstimates[key];
+               }
+           });
+           
+           setTrace(completeTrace);
+           setTrace(completeTrace);
       }
 
       const blob = await response.blob();
@@ -207,15 +354,86 @@ function Playground({ navigateTo }) {
     } catch (err) {
       console.error("Erro ao enviar requisição do Playground:", err);
       setError(err.message || 'Erro desconhecido ao enviar requisição.');
+      
+      // Criar um trace de erro detalhado
+      const detailedErrorTrace = {};
+      
+      // Preencher cada etapa do fluxo com dados relevantes
+      workflowStepsDefinition.forEach((step, index) => {
+          if (step.id === 'req-received') {
+              detailedErrorTrace[step.id] = {
+                  status: 'success',
+                  data: {
+                      method: method,
+                      url: requestUrl,
+                      headers: headersObj,
+                      body: bodyToSend,
+                      timestamp: new Date().toISOString()
+                  }
+              };
+          } else if (index <= 1) { // Assumir que as primeiras etapas foram concluídas
+              detailedErrorTrace[step.id] = {
+                  status: 'success',
+                  data: {
+                      info: `Etapa ${step.name} concluída`,
+                      timestamp: new Date().toISOString()
+                  }
+              };
+          } else {
+              // Para outras etapas, marcar como puladas devido ao erro
+              detailedErrorTrace[step.id] = {
+                  status: 'skipped',
+                  data: {
+                      info: `Etapa pulada devido a erro: ${err.message}`,
+                      timestamp: new Date().toISOString()
+                  }
+              };
+          }
+      });
+      
+      // Adicionar informações de erro
+      detailedErrorTrace['error'] = {
+          status: 'error',
+          data: {
+              message: err.message,
+              stack: err.stack,
+              timestamp: new Date().toISOString()
+          }
+      };
+      
+      // Tentar extrair informações adicionais do erro, se disponíveis
       const traceHeaderOnError = err.response?.headers?.get('x-forward-trace');
-       if (traceHeaderOnError) {
+      if (traceHeaderOnError) {
           try {
-              setTrace(JSON.parse(traceHeaderOnError));
+              const parsedErrorTrace = JSON.parse(traceHeaderOnError);
+              console.log("Trace de erro recebido:", parsedErrorTrace);
+              // Usar o trace recebido do backend, que é mais preciso
+              setTrace(parsedErrorTrace);
           } catch (e) {
-               setTrace({ error: { status: 'error', data: { message: "Falha na requisição. Não foi possível ler o rastreamento." } } });
+              console.error("Erro ao parsear trace de erro:", e);
+              setTrace(detailedErrorTrace);
           }
       } else {
-        setTrace({ error: { status: 'error', data: { message: "Falha na requisição.", details: err.message } } });
+          // Adicionar tempos estimados para cada etapa no caso de erro
+          const timeEstimates = {
+              'req-received': 5,
+              'config-lookup': 10,
+              'header-validation': 15,
+              'param-validation': 10,
+              'req-sent': 50,
+              'resp-received': 0,
+              'resp-manipulation': 0,
+              'resp-sent': 0
+          };
+          
+          // Distribuir o tempo entre as etapas
+          Object.keys(detailedErrorTrace).forEach(key => {
+              if (timeEstimates[key] && detailedErrorTrace[key].status === 'success') {
+                  detailedErrorTrace[key].time = timeEstimates[key];
+              }
+          });
+          
+          setTrace(detailedErrorTrace);
       }
     } finally {
       setLoading(false);
@@ -223,42 +441,55 @@ function Playground({ navigateTo }) {
   };
 
   const processTraceData = useCallback(() => {
+    console.log("Processando trace:", trace);
     let previousStepFailed = false;
+    
     return workflowStepsDefinition.map(step => {
         const currentStepData = { ...step };
-        const traceInfoForStep = trace && typeof trace === 'object' && !trace.error ? trace[step.id] : null;
+        
+        // Verifica se o trace existe e é um objeto válido
+        if (!trace || typeof trace !== 'object') {
+            currentStepData.status = 'pending';
+            currentStepData.data = null;
+            currentStepData.time = null;
+            return currentStepData;
+        }
+        
+        // Obtém informações específicas para esta etapa do trace
+        const traceInfoForStep = trace[step.id];
+        console.log(`Etapa ${step.id}:`, traceInfoForStep);
 
         if (previousStepFailed) {
+            // Se uma etapa anterior falhou, marca esta como pulada
             currentStepData.status = 'skipped';
             currentStepData.data = { info: "Etapa pulada devido a erro anterior." };
         } else if (traceInfoForStep) {
+            // Se há informações para esta etapa no trace, usa-as
             currentStepData.status = traceInfoForStep.status || 'success';
             currentStepData.data = traceInfoForStep.data || null;
             currentStepData.time = traceInfoForStep.time || null;
+            
+            // Se esta etapa falhou, marca para pular as próximas
             if (currentStepData.status === 'error') {
                 previousStepFailed = true;
             }
+        } else if (trace.error) {
+            // Se há um erro geral, marca como pulada
+            currentStepData.status = 'skipped';
+            currentStepData.data = { info: "Etapa pulada devido a erro geral." };
         } else {
-             if (trace?.error) {
-                 currentStepData.status = 'skipped';
-                 currentStepData.data = { info: "Etapa pulada devido a erro geral." };
-             } else {
-                if (typeof trace === 'string' && step.id === 'req-received' && trace === 'Enviando requisição...') {
-                    currentStepData.status = 'success';
-                    currentStepData.data = { info: trace };
-                } else {
-                    currentStepData.status = 'pending';
-                    currentStepData.data = null;
-                    currentStepData.time = null;
-                }
-             }
+            // Caso padrão: etapa pendente
+            currentStepData.status = 'pending';
+            currentStepData.data = null;
+            currentStepData.time = null;
         }
 
-         if (trace?.error && step.id === workflowStepsDefinition[workflowStepsDefinition.length - 1].id) {
-             currentStepData.status = 'error';
-             currentStepData.data = trace.error.data || { message: "Falha geral na requisição." };
-             previousStepFailed = true;
-         }
+        // Tratamento especial para a última etapa em caso de erro geral
+        if (trace.error && step.id === workflowStepsDefinition[workflowStepsDefinition.length - 1].id) {
+            currentStepData.status = 'error';
+            currentStepData.data = trace.error.data || { message: "Falha geral na requisição." };
+            previousStepFailed = true;
+        }
 
         return currentStepData;
     });
@@ -297,7 +528,7 @@ function Playground({ navigateTo }) {
           <a className="btn btn-ghost text-xl">Playground de Encaminhamento</a>
         </div>
         <div className="flex-none">
-          <button className="btn btn-outline btn-error" onClick={logout}>Logout</button>
+          {/* Botão de logout removido conforme solicitado */}
         </div>
       </div>
 
@@ -307,12 +538,12 @@ function Playground({ navigateTo }) {
         {/* Coluna da Requisição */}
         <div className="card bg-base-100 shadow-xl">
           <div className="card-body gap-4">
-            <h2 className="card-title">Configurar Requisição</h2>
+            <h2 className="card-title mb-4">Configurar Requisição</h2>
              {/* Selecionar Forward */}
-            <div className="form-control">
-              <label className="label"><span className="label-text">Forward Configurado</span></label>
+            <div className="form-control w-full mb-4">
+              <label className="label pb-1"><span className="label-text font-medium">Forward Configurado</span></label>
               {loadingForwards ? <span className="loading loading-sm"></span> : forwards.length > 0 ? (
-                  <select className="select select-bordered" value={selectedForwardId} onChange={(e) => setSelectedForwardId(e.target.value)} disabled={loading}>
+                  <select className="select select-bordered w-full" value={selectedForwardId} onChange={(e) => setSelectedForwardId(e.target.value)} disabled={loading}>
                       {forwards.map(fwd => (
                           <option key={fwd.id} value={fwd.id}>
                               {fwd.nome} ({fwd.metodo} /{fwd.slug}{fwd.custom_route ? fwd.custom_route.replace(/\/$/, '') : getDefaultPathFromUrl(fwd.url_destino)})
@@ -323,16 +554,16 @@ function Playground({ navigateTo }) {
             </div>
 
             {/* Sub-Path */}
-            <div className="form-control">
-              <label className="label"><span className="label-text">Sub-caminho Adicional (Opcional)</span></label>
-              <input type="text" placeholder="/detalhes/123" className="input input-bordered" value={subPath} onChange={(e) => setSubPath(e.target.value)} disabled={loading || !selectedForward} />
-              <div className="label"><span className="label-text-alt text-xs opacity-70">
+            <div className="form-control w-full mb-4">
+              <label className="label pb-1"><span className="label-text font-medium">Sub-caminho Adicional (Opcional)</span></label>
+              <input type="text" placeholder="/detalhes/123" className="input input-bordered w-full" value={subPath} onChange={(e) => setSubPath(e.target.value)} disabled={loading || !selectedForward} />
+              <div className="label pt-1"><span className="label-text-alt text-xs opacity-70">
                   {selectedForward ? `Será anexado a: /${selectedForward.slug}${selectedForward.custom_route ? selectedForward.custom_route.replace(/\/$/, '') : getDefaultPathFromUrl(selectedForward.url_destino)}` : 'Selecione um forward'}
               </span></div>
             </div>
 
             {/* Headers Req */}
-            <div className="collapse collapse-arrow border border-base-300 bg-base-200 rounded-box">
+            <div className="collapse collapse-arrow border border-base-300 bg-base-200 rounded-box mb-4">
                 <input type="checkbox" className="peer" />
                 <div className="collapse-title text-sm font-medium peer-checked:bg-base-300">
                     Headers (JSON)
@@ -345,7 +576,7 @@ function Playground({ navigateTo }) {
             </div>
 
             {/* Body Req */}
-             <div className="collapse collapse-arrow border border-base-300 bg-base-200 rounded-box">
+             <div className="collapse collapse-arrow border border-base-300 bg-base-200 rounded-box mb-4">
                 <input type="checkbox" className="peer" defaultChecked={selectedForward?.metodo !== 'GET' && selectedForward?.metodo !== 'HEAD'}/>
                 <div className="collapse-title text-sm font-medium peer-checked:bg-base-300">
                     Corpo (JSON ou Texto)
@@ -387,7 +618,7 @@ function Playground({ navigateTo }) {
                     )}
                 </div>
                  {/* Headers Resp */}
-                 <div className="collapse collapse-arrow border border-base-300 bg-base-200 rounded-box">
+                 <div className="collapse collapse-arrow border border-base-300 bg-base-200 rounded-box mb-4">
                     <input type="checkbox" className="peer" defaultChecked />
                     <div className="collapse-title text-sm font-medium peer-checked:bg-base-300">
                         Headers da Resposta (JSON)

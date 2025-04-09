@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createForward, updateForward } from '../services/api';
 import Editor from 'react-simple-code-editor';
 import { highlight, languages } from 'prismjs/components/prism-core';
 import 'prismjs/components/prism-clike'; // Core
 import 'prismjs/components/prism-javascript'; // Linguagem JS
 import 'prismjs/themes/prism-tomorrow.css'; // Tema escuro (pode escolher outro)
+import { FaFileImport } from 'react-icons/fa'; // Ícone para importação
 
 // Estilos básicos para o editor
 const editorStyles = {
@@ -43,14 +44,17 @@ function AddForwardModal({ isOpen, onClose, forwardData, onSave }) {
     headers_in_config: {}, // Drop removido
     headers_out_config: {}, // Drop removido
     params_config: { type: 'query' }, // Drop removido
-    headers_validator_script: '(headers, sharedContext) => {\n  // Modifique/valide headers. Opcionalmente, defina variáveis em sharedContext.\n  // Ex: sharedContext.apiKey = headers[\'x-api-key\'];\n  // Ex: delete headers[\'x-unwanted-header\'];\n  // Retorne \'headers\' modificados/originais para permitir.\n  // Retorne null/undefined ou lance erro para bloquear.\n  return headers;\n}',
-    params_validator_script: '(params, sharedContext) => {\n  // Modifique/valide query params (GET) ou body (POST).\n  // \'params\' será o objeto queryParams ou o objeto body.\n  // Ex: if (params.userId > 1000) throw new Error("ID de usuário inválido");\n  // Ex: sharedContext.userType = params.isAdmin ? "admin" : "user";\n  // Retorne \'params\' modificado/original para permitir.\n  // Retorne null/undefined ou lance erro para bloquear.\n  return params;\n}',
-    response_script: '(responseBody, responseHeaders, sharedContext) => {\n  // Manipule o corpo (Buffer) e/ou headers (objeto) da resposta.\n  // Ex: responseHeaders[\'content-type\'] = \'application/json\';\n  // Ex: let bodyObj = JSON.parse(responseBody.toString()); bodyObj.processed = true;\n  // IMPORTANTE: Retorne um objeto { body: corpoModificado, headers: headersModificados }.\n  // Se retornar apenas o corpo, os headers modificados aqui NÃO serão aplicados.\n  // Retornar undefined não altera nada.\n  // Lançar um erro aqui resultará em 500 para o cliente.\n  return { body: responseBody, headers: responseHeaders };\n}',
+    headers_validator_script: '(headers, ctx, route) => {\n  // Modifique/valide headers. Opcionalmente, defina variáveis em ctx.\n  // Parâmetros da rota customizada estão em route.params (ex: route.params.userId).\n  // Ex: ctx.apiKey = headers[\'x-api-key\'];\n  // Ex: delete headers[\'x-unwanted-header\'];\n  // Retorne \'headers\' modificados/originais para permitir.\n  // Retorne null/undefined ou lance erro para bloquear.\n  return headers;\n}',
+    params_validator_script: '(params, ctx, route) => {\n  // Modifique/valide query params (GET) ou body (POST).\n  // \'params\' será o objeto queryParams (route.query_params) ou o objeto body.\n  // Parâmetros da rota customizada estão em route.params (ex: route.params.modelId).\n  // Ex: if (params.userId > 1000) throw new Error("ID de usuário inválido");\n  // Ex: ctx.userType = params.isAdmin ? "admin" : "user";\n  // Retorne \'params\' modificado/original para permitir.\n  // Retorne null/undefined ou lance erro para bloquear.\n  return params;\n}',
+    response_script: '(responseBody, responseHeaders, ctx, route) => {\n  // Manipule o corpo (Buffer) e/ou headers (objeto) da resposta.\n  // Parâmetros da rota customizada estão em route.params.\n  // Variáveis definidas em etapas anteriores estão em ctx.\n  // Ex: responseHeaders[\'content-type\'] = \'application/json\';\n  // Ex: let bodyObj = JSON.parse(responseBody.toString()); bodyObj.processed = ctx.processedFlag;\n  // IMPORTANTE: Retorne um objeto { body: corpoModificado, headers: headersModificados }.\n  // Se retornar apenas o corpo, os headers modificados aqui NÃO serão aplicados.\n  // Retornar undefined não altera nada.\n  // Lançar um erro aqui resultará em 500 para o cliente.\n  return { body: responseBody, headers: responseHeaders };\n}',
   };
 
   const [formData, setFormData] = useState(initialFormData);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [importedConfig, setImportedConfig] = useState(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -113,6 +117,85 @@ function AddForwardModal({ isOpen, onClose, forwardData, onSave }) {
      setFormData(prev => ({ ...prev, [scriptField]: value }));
   };
 
+  // Função para lidar com o clique no botão de importação
+  const handleImportClick = () => {
+    fileInputRef.current.click();
+  };
+
+  // Função para processar o arquivo importado
+  const handleFileImport = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const importedData = JSON.parse(e.target.result);
+        
+        // Verificar se o arquivo tem o formato esperado (array de objetos ou objeto único)
+        if (Array.isArray(importedData) && importedData.length > 0) {
+          // Se for um array, pegar o primeiro item
+          setImportedConfig(importedData[0]);
+          setShowConfirmDialog(true);
+        } else if (typeof importedData === 'object' && importedData !== null) {
+          // Se for um objeto único
+          setImportedConfig(importedData);
+          setShowConfirmDialog(true);
+        } else {
+          setError('Formato de arquivo inválido. O arquivo deve conter um objeto de configuração válido.');
+        }
+      } catch (error) {
+        setError(`Erro ao processar o arquivo: ${error.message}`);
+      }
+      
+      // Limpar o input para permitir selecionar o mesmo arquivo novamente
+      event.target.value = '';
+    };
+    
+    reader.onerror = () => {
+      setError('Erro ao ler o arquivo.');
+      event.target.value = '';
+    };
+    
+    reader.readAsText(file);
+  };
+
+  // Função para confirmar a importação
+  const handleConfirmImport = () => {
+    if (importedConfig) {
+      // Preparar os dados importados
+      const configToApply = {
+        ...initialFormData,
+        ...importedConfig,
+        // Garantir que configs sejam objetos e scripts sejam strings
+        headers_in_config: parseJsonConfig(importedConfig.headers_in_config, {}),
+        headers_out_config: parseJsonConfig(importedConfig.headers_out_config, {}),
+        params_config: parseJsonConfig(importedConfig.params_config, {
+          type: importedConfig.metodo === 'GET' ? 'query' : 'body'
+        }),
+        headers_validator_script: importedConfig.headers_validator_script || initialFormData.headers_validator_script,
+        params_validator_script: importedConfig.params_validator_script || initialFormData.params_validator_script,
+        response_script: importedConfig.response_script || initialFormData.response_script,
+      };
+      
+      // Remover o ID se estiver presente (para evitar conflitos ao criar novo)
+      if (!isEditing && configToApply.id) {
+        delete configToApply.id;
+      }
+      
+      // Aplicar a configuração importada
+      setFormData(configToApply);
+      setShowConfirmDialog(false);
+      setImportedConfig(null);
+    }
+  };
+
+  // Função para cancelar a importação
+  const handleCancelImport = () => {
+    setShowConfirmDialog(false);
+    setImportedConfig(null);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -152,26 +235,40 @@ function AddForwardModal({ isOpen, onClose, forwardData, onSave }) {
           {error && <div role="alert" className="alert alert-error mb-4 text-sm p-2"><span>{error}</span></div>}
 
           {/* Campos Principais */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-            <div className="form-control">
-              <label className="label"><span className="label-text">Nome Identificador *</span></label>
-              <input type="text" name="nome" placeholder="Ex: meu-chat-gpt" className="input input-bordered" value={formData.nome} onChange={handleChange} required disabled={loading} />
+          {/* Campos Principais - Grid Responsivo com Colspan */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-4 mb-4"> {/* Grid com gap */}
+            {/* Nome Identificador (Ocupa 1 coluna em LG) */}
+            <div className="flex flex-col">
+              <div className="form-control w-full">
+                <label className="label pb-1"><span className="label-text">Nome Identificador *</span></label>
+                <input type="text" name="nome" placeholder="Ex: meu-chat-gpt" className="input input-bordered w-full" value={formData.nome} onChange={handleChange} required disabled={loading} />
+              </div>
             </div>
-             <div className="form-control">
-              <label className="label"><span className="label-text">Método HTTP *</span></label>
-              <select name="metodo" className="select select-bordered" value={formData.metodo} onChange={handleChange} required disabled={loading}>
-                <option value="GET">GET</option> <option value="POST">POST</option> <option value="PUT">PUT</option>
-                <option value="DELETE">DELETE</option> <option value="PATCH">PATCH</option>
-              </select>
+            {/* Método HTTP (Ocupa 1 coluna em LG) */}
+            <div className="flex flex-col">
+              <div className="form-control w-full">
+                <label className="label pb-1"><span className="label-text">Método HTTP *</span></label>
+                <select name="metodo" className="select select-bordered w-full" value={formData.metodo} onChange={handleChange} required disabled={loading}>
+                  <option value="GET">GET</option> <option value="POST">POST</option> <option value="PUT">PUT</option>
+                  <option value="DELETE">DELETE</option> <option value="PATCH">PATCH</option>
+                </select>
+              </div>
             </div>
-             <div className="form-control">
-              <label className="label"><span className="label-text">URL de Destino *</span></label>
-              <input type="url" name="url_destino" placeholder="https://api.exemplo.com/endpoint" className="input input-bordered" value={formData.url_destino} onChange={handleChange} required disabled={loading} />
+            {/* URL de Destino (Ocupa 2 colunas em LG) */}
+            <div className="flex flex-col lg:col-span-2"> {/* <<<<<<< COLSPAN ADICIONADO */}
+              <div className="form-control w-full">
+                <label className="label pb-1"><span className="label-text">URL de Destino (Template) *</span></label>
+                <input type="text" name="url_destino" placeholder="https://api.exemplo.com/{param1}/items/{itemId}" className="input input-bordered w-full" value={formData.url_destino} onChange={handleChange} required disabled={loading} />
+              </div>
+              <div className="label pt-1 pb-0"><span className="label-text-alt text-xs text-opacity-70">Use chaves {'{}'} para variáveis (ex: {'{id}'}). Serão substituídas por valores de `sharedContext` (incluindo `routeParams`).</span></div>
             </div>
-            <div className="form-control">
-              <label className="label"><span className="label-text">Rota Customizada (Opcional)</span></label>
-              <input type="text" name="custom_route" placeholder="/v1/proxy/meu-chat (inicia com /)" className="input input-bordered" value={formData.custom_route || ''} onChange={handleChange} disabled={loading} />
-               <div className="label"><span className="label-text-alt">Se vazio, usará /&lt;slug-do-nome&gt;/&lt;path-da-url-destino&gt;/*</span></div>
+            {/* Rota Customizada (Ocupa 2 colunas em LG) */}
+            <div className="flex flex-col lg:col-span-2"> {/* <<<<<<< COLSPAN ADICIONADO */}
+              <div className="form-control w-full">
+                <label className="label pb-1"><span className="label-text">Rota Customizada (Opcional, com parâmetros)</span></label>
+                <input type="text" name="custom_route" placeholder="/v1/users/{userId}/posts/{postId}" className="input input-bordered w-full" value={formData.custom_route || ''} onChange={handleChange} disabled={loading} />
+              </div>
+               <div className="label pt-1 pb-0"><span className="label-text-alt text-xs text-opacity-70">Define o início do caminho após o slug (ex: `/v1/items/{'{id}'}`). Parâmetros {'{}'} estarão em `sharedContext.routeParams`. Se vazio, usa o path da URL de Destino.</span></div>
             </div>
           </div>
 
@@ -245,8 +342,25 @@ function AddForwardModal({ isOpen, onClose, forwardData, onSave }) {
                  </div>
             </div> {/* Fim do space-y-3 */}
 
+          {/* Input de arquivo oculto para importação */}
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileImport}
+            accept=".json"
+            style={{ display: 'none' }}
+          />
+
           {/* Ações */}
           <div className="modal-action mt-6">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleImportClick}
+              disabled={loading}
+            >
+              <FaFileImport className="mr-1" /> Importar JSON
+            </button>
             <button type="button" className="btn btn-ghost" onClick={onClose} disabled={loading}>Cancelar</button>
             <button type="submit" className="btn btn-primary" disabled={loading}>
               {loading ? <span className="loading loading-spinner loading-sm"></span> : (isEditing ? 'Salvar Alterações' : 'Criar Forward')}
@@ -254,6 +368,33 @@ function AddForwardModal({ isOpen, onClose, forwardData, onSave }) {
           </div>
         </form>
       </div>
+
+      {/* Diálogo de confirmação para importação */}
+      {showConfirmDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
+          <div className="bg-base-100 p-6 rounded-lg shadow-xl max-w-md w-full">
+            <h3 className="font-bold text-lg mb-4">Confirmar Importação</h3>
+            <p className="mb-6">
+              A configuração atual será substituída pelos dados importados. Esta ação não pode ser desfeita.
+              Deseja continuar?
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                className="btn btn-ghost"
+                onClick={handleCancelImport}
+              >
+                Cancelar
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleConfirmImport}
+              >
+                Confirmar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </dialog>
   );
 }

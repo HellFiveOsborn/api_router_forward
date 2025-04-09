@@ -1,7 +1,7 @@
 // frontend/src/components/ForwardList.jsx
 import React, { useState, useEffect, useCallback } from 'react';
-import { getForwards, deleteForward } from '../services/api'; // Importa funções da API
-import { FaEdit, FaTrashAlt, FaExternalLinkAlt, FaPlus } from 'react-icons/fa'; // Ícones
+import { getForwards, deleteForward, exportForwardConfig } from '../services/api'; // Importa funções da API
+import { FaEdit, FaTrashAlt, FaExternalLinkAlt, FaPlus, FaFileExport } from 'react-icons/fa'; // Ícones
 
 // Função auxiliar para derivar path padrão da URL (adaptada do backend)
 function getDefaultPathFromUrl(urlString) {
@@ -13,7 +13,6 @@ function getDefaultPathFromUrl(urlString) {
         const pathname = parsedUrl.pathname || '/';
         return pathname === '/' ? '/' : pathname.replace(/\/$/, ''); // Remove barra final se não for raiz
     } catch (e) {
-        console.warn(`[Forward List] URL de destino inválida para derivar path padrão: ${urlString}`);
         return '/'; // Retorna raiz como fallback
     }
 }
@@ -25,16 +24,19 @@ function ForwardList({ onEdit, onAdd }) {
   const [error, setError] = useState('');
 
   const fetchForwards = useCallback(async () => {
-    console.log("Buscando forwards...");
     setLoading(true);
     setError('');
     try {
       const data = await getForwards();
-      console.log("Forwards recebidos:", data);
       setForwards(data || []); // Garante que seja um array
     } catch (err) {
-      console.error("Erro ao buscar forwards:", err);
-      setError(err.message || "Falha ao carregar a lista de forwards.");
+      // Verifica se é um erro de autenticação (401 ou 403)
+      if (err.response && (err.response.status === 401 || err.response.status === 403)) {
+        // Não define o erro local, permite que o AuthContext/App lide com o redirecionamento
+      } else {
+        // Para outros erros, define a mensagem de erro local
+        setError(err.message || "Falha ao carregar a lista de forwards.");
+      }
       // Se o erro for 401/403, o apiFetch já limpou o token,
       // o AuthContext deve detectar a mudança e redirecionar para Login via App.jsx
     } finally {
@@ -48,21 +50,18 @@ function ForwardList({ onEdit, onAdd }) {
 
   const handleEditClick = (forward) => {
     if (onEdit) onEdit(forward);
-    else console.warn("Função onEdit não fornecida para ForwardList");
+    // else console.warn("Função onEdit não fornecida para ForwardList"); // Log removido
   };
 
   const handleDeleteClick = async (forward) => {
      if (window.confirm(`Tem certeza que deseja deletar o forward "${forward.nome}" (ID: ${forward.id})? Esta ação não pode ser desfeita.`)) {
-        console.log("Tentando deletar forward:", forward.id);
         try {
             setLoading(true); // Pode ser um loading específico para a linha
             await deleteForward(forward.id);
-            console.log("Forward deletado com sucesso:", forward.id);
             // Atualiza a lista removendo o item deletado
             setForwards(prevForwards => prevForwards.filter(f => f.id !== forward.id));
             // Opcional: Exibir notificação de sucesso
         } catch (err) {
-            console.error(`Erro ao deletar forward ${forward.id}:`, err);
             setError(`Falha ao deletar o forward "${forward.nome}": ${err.message}`);
             // Opcional: Exibir notificação de erro
         } finally {
@@ -71,6 +70,18 @@ function ForwardList({ onEdit, onAdd }) {
      }
   };
 
+ // Função para lidar com a exportação de configuração de um forward específico
+ const handleExportClick = async (id) => {
+   try {
+     setLoading(true);
+     await exportForwardConfig(id);
+     // Não é necessário atualizar o estado, pois a exportação não altera os dados
+   } catch (err) {
+     setError(`Falha ao exportar configuração: ${err.message}`);
+   } finally {
+     setLoading(false);
+   }
+ };
 
   if (loading && forwards.length === 0) { // Mostra loading principal apenas na carga inicial
     return <div className="flex justify-center items-center p-10"><span className="loading loading-lg loading-dots text-primary"></span></div>;
@@ -109,65 +120,79 @@ function ForwardList({ onEdit, onAdd }) {
             </button>
          </div>
       ) : (
-        <table className="table table-zebra w-full">
-          {/* head */}
-          <thead>
-            <tr>
-              <th>Nome</th>
-              <th>Rota do Sistema</th>
-              <th>URL de Destino</th>
-              <th>Método</th>
-              <th>Última Modificação</th>
-              <th className="text-right">Ações</th>
-            </tr>
-          </thead>
-          <tbody>
-            {forwards.map((fwd) => (
-              <tr key={fwd.id} className={`hover ${loading && 'opacity-50'}`}> {/* Exemplo de loading por linha */}
-                <td className="font-medium">{fwd.nome}</td>
-                <td>
-                    {/* Exibe a rota completa do sistema */}
-                    <code className="bg-base-300 px-1 rounded text-sm">
-                        /{fwd.slug}{fwd.custom_route ? fwd.custom_route.replace(/\/$/, '') : getDefaultPathFromUrl(fwd.url_destino)}
-                        {/* Adiciona /* para indicar que captura sub-rotas, exceto se for a raiz */}
-                        {(fwd.custom_route || getDefaultPathFromUrl(fwd.url_destino)) !== '/' ? '/*' : '*'}
-                    </code>
-                </td>
-                <td className="max-w-xs truncate" title={fwd.url_destino}>
-                    <a href={fwd.url_destino} target="_blank" rel="noopener noreferrer" className="link link-hover link-secondary inline-flex items-center text-sm">
-                        {fwd.url_destino} <FaExternalLinkAlt className="ml-1 text-xs" />
-                    </a>
-                </td>
-                <td><span className={`badge badge-sm ${
-                    fwd.metodo === 'POST' ? 'badge-success' :
-                    fwd.metodo === 'GET' ? 'badge-info' :
-                    fwd.metodo === 'PUT' ? 'badge-warning' :
-                    fwd.metodo === 'DELETE' ? 'badge-error' :
-                    'badge-ghost'
-                    }`}>{fwd.metodo}</span></td>
-                 <td className="text-xs text-gray-500">{fwd.updated_at ? new Date(fwd.updated_at).toLocaleString() : '-'}</td>
-                <td className="text-right">
-                  <div className="flex gap-1 justify-end">
-                    <button
-                      className="btn btn-xs btn-ghost text-info tooltip" data-tip="Editar"
-                      onClick={() => handleEditClick(fwd)}
-                      disabled={loading} // Desabilita durante loading geral
-                    >
-                      <FaEdit />
-                    </button>
-                    <button
-                      className="btn btn-xs btn-ghost text-error tooltip" data-tip="Deletar"
-                      onClick={() => handleDeleteClick(fwd)}
-                      disabled={loading} // Desabilita durante loading geral
-                    >
-                      <FaTrashAlt />
-                    </button>
-                  </div>
-                </td>
+        <>
+          <table className="table table-zebra w-full">
+            {/* head */}
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>Rota do Sistema</th>
+                <th>URL de Destino</th>
+                <th>Método</th>
+                <th>Última Modificação</th>
+                <th className="text-right">Ações</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {forwards.map((fwd) => (
+                // O erro de hidratação original era provavelmente devido a espaços/comentários
+                // entre o `<tbody>` e o primeiro `<tr>` ou entre `map` e `<tr>`.
+                // Garantindo que o map retorne diretamente o tr.
+                <React.Fragment key={fwd.id}>
+                  <tr className={`hover ${loading && 'opacity-50'}`}>
+                  <td className="font-medium">{fwd.nome}</td>
+                  <td>
+                      {/* Exibe a rota completa do sistema */}
+                      <code className="bg-base-300 px-1 rounded text-sm">
+                          /{fwd.slug}{fwd.custom_route ? fwd.custom_route.replace(/\/$/, '') : getDefaultPathFromUrl(fwd.url_destino)}
+                          {/* Adiciona /* para indicar que captura sub-rotas, exceto se for a raiz */}
+                          {(fwd.custom_route || getDefaultPathFromUrl(fwd.url_destino)) !== '/' ? '/*' : '*'}
+                      </code>
+                  </td>
+                  <td className="max-w-xs truncate" title={fwd.url_destino}>
+                      <a href={fwd.url_destino} target="_blank" rel="noopener noreferrer" className="link link-hover link-secondary inline-flex items-center text-sm">
+                          {fwd.url_destino} <FaExternalLinkAlt className="ml-1 text-xs" />
+                      </a>
+                  </td>
+                  <td><span className={`badge badge-sm ${
+                      fwd.metodo === 'POST' ? 'badge-success' :
+                      fwd.metodo === 'GET' ? 'badge-info' :
+                      fwd.metodo === 'PUT' ? 'badge-warning' :
+                      fwd.metodo === 'DELETE' ? 'badge-error' :
+                      'badge-ghost'
+                      }`}>{fwd.metodo}</span></td>
+                   <td className="text-xs text-gray-500">{fwd.updated_at ? new Date(fwd.updated_at).toLocaleString() : '-'}</td>
+                  <td className="text-right">
+                    <div className="flex gap-1 justify-end">
+                      <button
+                        className="btn btn-xs btn-ghost text-info tooltip" data-tip="Editar"
+                        onClick={() => handleEditClick(fwd)}
+                        disabled={loading} // Desabilita durante loading geral
+                      >
+                        <FaEdit />
+                      </button>
+                      <button
+                        className="btn btn-xs btn-ghost text-secondary tooltip" data-tip="Exportar"
+                        onClick={() => handleExportClick(fwd.id)}
+                        disabled={loading} // Desabilita durante loading geral
+                      >
+                        <FaFileExport />
+                      </button>
+                      <button
+                        className="btn btn-xs btn-ghost text-error tooltip" data-tip="Deletar"
+                        onClick={() => handleDeleteClick(fwd)}
+                        disabled={loading} // Desabilita durante loading geral
+                      >
+                        <FaTrashAlt />
+                      </button>
+                    </div>
+                  </td>
+                  </tr>
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </>
       )}
     </div>
   );

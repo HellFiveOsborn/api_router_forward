@@ -15,12 +15,19 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/spec/v2.0.
 - 📝 Criação inicial do arquivo `CHANGELOG.md`.
 - 📊 Adição de diagrama de fluxo Mermaid ao `README.md`.
 - 🖼️ Adição de imagem do Playground (`images/image2.png`) ao `README.md`.
+- 📤 Nova rota para exportação de configurações de forwards (`/api/forwards/export/:id`).
+- 🔄 Funções no frontend para exportar e importar configurações de forwards.
+- 🚨 Evento global 'auth-error' para tratamento centralizado de erros de autenticação.
 
 ### Modificado
 
 - 💄 Melhorias na interface do usuário do modal `AddForwardModal`.
 - 📄 Atualização do `README.md` com novas seções (Playground, Fluxo da Requisição) e imagens.
 - ⚙️ Integração dos novos componentes no `App.jsx` e `Dashboard.jsx`.
+- 🎨 Aprimoramentos na interface do Playground (layout, espaçamento e organização visual).
+- ♻️ Refatoração do AuthContext para evitar referências circulares e melhorar o gerenciamento de estado.
+- 🔍 Melhorias no tratamento de erros e sistema de rastreamento no servidor.
+- 🧹 Remoção do botão de logout do Playground para simplificar a interface.
 
 ## [0.1.0] - 2025-04-02
 

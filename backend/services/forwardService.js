@@ -1,9 +1,9 @@
 // backend/services/forwardService.js
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
-const slugify = require('slugify'); // Importar slugify
-const { URL } = require('url'); // Para parsear URL de destino
-
+const slugify = require('slugify');
+const { URL } = require('url');
+const { match } = require('path-to-regexp'); // Importar match
 // --- Database Connection ---
 const dbPath = path.join(__dirname, '../db/database.sqlite');
 let db;
@@ -248,41 +248,83 @@ const forwardService = {
     });
   },
 
-  // Nova função para buscar por slug e path
+  // Modificada para suportar path parameters
   findBySlugAndPath: (reqPath) => {
     return new Promise((resolve, reject) => {
-      if (!db || typeof db.get !== 'function') return reject("Instância do DB inválida.");
+      if (!db || typeof db.all !== 'function') return reject("Instância do DB inválida.");
 
-      // 1. Extrair slug e subPath
-      const pathSegments = reqPath.split('/').filter(Boolean);
-      if (pathSegments.length === 0) return resolve(null); // Raiz não mapeada
+      // 1. Buscar todas as configurações
+      const sql = "SELECT * FROM forwards";
+      db.all(sql, [], (err, rows) => {
+        if (err) return reject(`Erro ao buscar todas as configurações de forward: ${err.message}`);
+        if (!rows || rows.length === 0) return resolve(null); // Nenhuma configuração encontrada
 
-      const potentialSlug = pathSegments[0];
-      const subPath = '/' + pathSegments.slice(1).join('/');
+        let matchedConfig = null;
+        let extractedParams = {};
 
-      // 2. Buscar forward pelo slug
-      const sql = "SELECT * FROM forwards WHERE slug = ?";
-      db.get(sql, [potentialSlug], (err, row) => {
-        if (err) return reject(`Erro ao buscar forward pelo slug '${potentialSlug}': ${err.message}`);
-        if (!row) return resolve(null); // Slug não encontrado
+        // 2. Iterar e tentar fazer match
+        for (const row of rows) {
+          let patternToMatch = '';
 
-        // 3. Determinar o path esperado
-        const expectedSubPathPrefix = row.custom_route ? row.custom_route.replace(/\/$/, '') : getDefaultPathFromUrl(row.url_destino);
-
-        // 4. Comparar subPath com o prefixo esperado
-        if (subPath.startsWith(expectedSubPathPrefix)) {
-           console.log(`[Forward Service] Match: Slug '${potentialSlug}', SubPath '${subPath}' começa com '${expectedSubPathPrefix}'`);
-           try {
-                row.headers_in_config = parseJsonConfig(row.headers_in_config, {});
-                row.headers_out_config = parseJsonConfig(row.headers_out_config, {});
-                row.params_config = parseJsonConfig(row.params_config, { type: row.metodo === 'GET' ? 'query' : 'body' });
-            } catch (parseError) {
-                 console.error(`Erro ao parsear JSON para forward ID ${row.id} em findBySlugAndPath:`, parseError);
+          if (row.custom_route) {
+            // Usar slug + custom_route
+            patternToMatch = `/${row.slug}${row.custom_route.startsWith('/') ? row.custom_route : '/' + row.custom_route}`;
+            
+            // Tratar wildcard '*' no final especificamente para path-to-regexp
+            if (patternToMatch.endsWith('/*')) {
+              // Substituir '/*' por '/(.*)' ou apenas '(.*)' se for a raiz '/*'
+              patternToMatch = patternToMatch === '/*' ? '(.*)' : patternToMatch.slice(0, -2) + '(.*)';
+            } else if (patternToMatch.endsWith('*') && !patternToMatch.endsWith('/*')) {
+              // Tratar '*' no final não precedido por '/' (ex: /files*)
+              // Isso pode significar "match qualquer coisa começando com /files"
+              patternToMatch = patternToMatch.slice(0, -1) + '(.*)';
             }
-           resolve(row); // Match!
+          } else {
+            // Fallback: Construir padrão a partir do slug e path da URL de destino + wildcard
+            let routePatternBase = getDefaultPathFromUrl(row.url_destino);
+            // Garantir que o path base não termine com barra antes de adicionar wildcard
+            routePatternBase = routePatternBase.replace(/\/$/, '');
+            // Se o path base for vazio (raiz '/'), tratar corretamente
+            patternToMatch = `/${row.slug}${routePatternBase || ''}(.*)`;
+          }
+
+          try {
+            console.log(`[Forward Service] Tentando match para ${reqPath} com padrão '${patternToMatch}' (ID: ${row.id})`);
+            console.log(`[Forward Service] custom_route: ${row.custom_route}, url_destino: ${row.url_destino}, slug: ${row.slug}`);
+
+            const matcher = match(patternToMatch, { decode: decodeURIComponent, strict: false });
+            const matchResult = matcher(reqPath);
+
+            if (matchResult) {
+              console.log(`[Forward Service] Match encontrado para ${reqPath} com padrão ${patternToMatch} (ID: ${row.id})`);
+              matchedConfig = row;
+              // Combinar parâmetros de path com possível match de wildcard (param '0')
+              extractedParams = matchResult.params || {};
+              break; // Encontrou o primeiro match, para a iteração
+            }
+          } catch (matchError) {
+            // Logar o padrão específico que causou o erro
+            console.error(`[Forward Service] Erro ao tentar match com padrão '${patternToMatch}' para ID ${row.id}:`, matchError);
+            // Continua tentando outros padrões
+          }
+        }
+
+        // 3. Se encontrou um match, parseia JSON e retorna
+        if (matchedConfig) {
+          try {
+            matchedConfig.headers_in_config = parseJsonConfig(matchedConfig.headers_in_config, {});
+            matchedConfig.headers_out_config = parseJsonConfig(matchedConfig.headers_out_config, {});
+            matchedConfig.params_config = parseJsonConfig(matchedConfig.params_config, { type: matchedConfig.metodo === 'GET' ? 'query' : 'body' });
+          } catch (parseError) {
+            console.error(`Erro ao parsear JSON para forward ID ${matchedConfig.id} em findBySlugAndPath:`, parseError);
+            // Rejeitar se o parse falhar? Ou retornar config parcialmente parseada? Por ora, rejeita.
+            return reject(`Erro ao parsear configuração JSON para o forward ID ${matchedConfig.id}`);
+          }
+          // Retorna a configuração e os parâmetros extraídos
+          resolve({ config: matchedConfig, params: extractedParams });
         } else {
-          console.log(`[Forward Service] Slug '${potentialSlug}' encontrado, mas SubPath '${subPath}' não corresponde ao esperado '${expectedSubPathPrefix}'`);
-          resolve(null); // Sub-path não corresponde
+          // Nenhum match encontrado
+          resolve(null);
         }
       });
     });

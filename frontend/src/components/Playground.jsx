@@ -160,6 +160,8 @@ function Playground({ navigateTo }) {
 
       const token = localStorage.getItem('authToken');
       if (token) { headersObj['Authorization'] = `Bearer ${token}`; }
+      // Adiciona o header para indicar que a requisição vem do Playground
+      headersObj['X-Source'] = 'Playground';
 
       const method = selectedForward.metodo.toUpperCase();
       let bodyToSend = undefined;
@@ -187,21 +189,24 @@ function Playground({ navigateTo }) {
       delete headersForDisplay['x-forward-trace'];
       setResponseHeaders(JSON.stringify(headersForDisplay, null, 2));
 
-      const traceHeader = rawHeaders['x-forward-trace'];
-      if (traceHeader) {
+      const traceHeaderBase64 = rawHeaders['x-forward-trace']; // Nome da variável mudou para clareza
+      if (traceHeaderBase64) {
           try {
-              const parsedTrace = JSON.parse(traceHeader);
-              console.log("Trace recebido (raw):", traceHeader);
-              console.log("Trace parseado:", parsedTrace);
-              
+              // Decodifica de Base64 e faz o parse do JSON
+              const decodedTraceJson = atob(traceHeaderBase64);
+              const parsedTrace = JSON.parse(decodedTraceJson);
+              console.log("Trace recebido (Base64):", traceHeaderBase64);
+              console.log("Trace decodificado e parseado:", parsedTrace);
+
               // Usar o trace completo recebido do backend
               setTrace(parsedTrace);
           } catch (e) {
-              console.error("Erro ao parsear header X-Forward-Trace:", e);
+              console.error("Erro ao decodificar/parsear header X-Forward-Trace:", e);
+              // Mantém o fallback, mas adiciona info sobre o erro de decodificação
               setTrace({
                   error: {
                       status: 'error',
-                      data: { message: "Falha ao parsear dados de rastreamento." }
+                      data: { message: "Falha ao decodificar/parsear dados de rastreamento.", rawValue: traceHeaderBase64 }
                   },
                   'req-received': {
                       status: 'success',
@@ -210,8 +215,9 @@ function Playground({ navigateTo }) {
               });
           }
       } else {
-           // Usar os dados do trace recebidos do backend
-           // Se não houver trace, criar um trace completo com base nos dados da resposta
+           // Se não houver trace (requisição não veio do Playground ou erro no backend ao setar),
+           // criar um trace simulado com base nos dados da resposta
+           console.log("Header X-Forward-Trace não encontrado. Gerando trace simulado.");
            const completeTrace = {};
            
            // Preencher cada etapa do fluxo com dados relevantes e específicos
@@ -402,19 +408,27 @@ function Playground({ navigateTo }) {
       };
       
       // Tentar extrair informações adicionais do erro, se disponíveis
-      const traceHeaderOnError = err.response?.headers?.get('x-forward-trace');
-      if (traceHeaderOnError) {
+      // Tenta obter o trace mesmo em caso de erro (pode ter sido setado antes do erro final)
+      const traceHeaderOnErrorBase64 = err.response?.headers?.get('x-forward-trace');
+      if (traceHeaderOnErrorBase64) {
           try {
-              const parsedErrorTrace = JSON.parse(traceHeaderOnError);
-              console.log("Trace de erro recebido:", parsedErrorTrace);
+              // Decodifica de Base64 e faz o parse do JSON
+              const decodedErrorTraceJson = atob(traceHeaderOnErrorBase64);
+              const parsedErrorTrace = JSON.parse(decodedErrorTraceJson);
+              console.log("Trace de erro recebido (Base64):", traceHeaderOnErrorBase64);
+              console.log("Trace de erro decodificado e parseado:", parsedErrorTrace);
               // Usar o trace recebido do backend, que é mais preciso
               setTrace(parsedErrorTrace);
           } catch (e) {
-              console.error("Erro ao parsear trace de erro:", e);
+              console.error("Erro ao decodificar/parsear trace de erro:", e);
+              // Adiciona a informação do erro de parse ao trace detalhado
+              detailedErrorTrace.error.data.traceParseError = e.message;
+              detailedErrorTrace.error.data.rawTraceOnError = traceHeaderOnErrorBase64;
               setTrace(detailedErrorTrace);
           }
       } else {
-          // Adicionar tempos estimados para cada etapa no caso de erro
+           console.log("Header X-Forward-Trace não encontrado no erro. Usando trace simulado.");
+          // Adicionar tempos estimados para cada etapa no caso de erro e sem trace
           const timeEstimates = {
               'req-received': 5,
               'config-lookup': 10,

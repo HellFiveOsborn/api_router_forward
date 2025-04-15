@@ -173,6 +173,84 @@ function runScript(script, req, sharedContext, additionalContext = {}, scriptNam
     }
 }
 
+// --- Fim Helper Functions ---
+
+// --- Função Auxiliar para Header de Trace ---
+function setTraceHeaderIfNeeded(req, res, traceLog) {
+    // Verifica se a requisição veio do Playground (ou outra fonte que deva receber o trace)
+    if (req.headers['x-source'] === 'Playground') {
+        try {
+            // Cria uma cópia profunda para não modificar o original que pode ser usado em logs
+            const traceLogCopy = JSON.parse(JSON.stringify(traceLog));
+
+            // Limita o tamanho de campos potencialmente grandes ANTES de serializar/codificar
+            Object.keys(traceLogCopy).forEach(key => {
+                if (traceLogCopy[key] && traceLogCopy[key].data) {
+                    const data = traceLogCopy[key].data;
+                    // Limitar headers (exemplo: stringify e truncar se > 500 chars)
+                    if (data.headers) {
+                        const headersString = JSON.stringify(data.headers);
+                        if (headersString.length > 500) {
+                            data.headers = { info: `Headers omitidos (${headersString.length} bytes)` };
+                        }
+                    }
+                    // Limitar bodyPreview
+                    if (data.bodyPreview && data.bodyPreview.length > 500) {
+                        data.bodyPreview = data.bodyPreview.substring(0, 500) + '... (truncado)';
+                    }
+                    // Limitar body (se for string)
+                    if (data.body && typeof data.body === 'string' && data.body.length > 500) {
+                        data.body = data.body.substring(0, 500) + '... (truncado)';
+                    }
+                    // Limitar stack trace
+                    if (data.stack && data.stack.length > 500) {
+                        data.stack = data.stack.substring(0, 500) + '... (truncado)';
+                    }
+                    // Limitar queryParams (exemplo)
+                     if (data.queryParams) {
+                        const queryString = JSON.stringify(data.queryParams);
+                        if (queryString.length > 300) {
+                            data.queryParams = { info: `Query Params omitidos (${queryString.length} bytes)` };
+                        }
+                    }
+                     // Limitar routeParams (exemplo)
+                     if (data.routeParams) {
+                        const paramsString = JSON.stringify(data.routeParams);
+                        if (paramsString.length > 200) {
+                            data.routeParams = { info: `Route Params omitidos (${paramsString.length} bytes)` };
+                        }
+                    }
+                }
+            });
+
+            const traceLogJson = JSON.stringify(traceLogCopy);
+            const encodedTrace = Buffer.from(traceLogJson).toString('base64');
+
+            // Define um limite razoável para o header Base64 (ex: 7.5KB)
+            const MAX_HEADER_SIZE = 7500;
+            if (encodedTrace.length < MAX_HEADER_SIZE) {
+                console.log(`[Trace Header] Adicionando X-Forward-Trace codificado (${encodedTrace.length} bytes)`);
+                res.set('X-Forward-Trace', encodedTrace);
+            } else {
+                console.warn(`[Trace Header] X-Forward-Trace codificado muito grande (${encodedTrace.length} bytes), omitindo.`);
+                // Opcional: Adicionar um header indicando que o trace foi omitido por tamanho
+                // res.set('X-Forward-Trace-Omitted', 'Size limit exceeded');
+            }
+        } catch (encodeError) {
+            console.error('[Trace Header] Erro ao codificar ou definir X-Forward-Trace:', encodeError);
+            // Opcional: Adicionar um header indicando erro no trace
+            // res.set('X-Forward-Trace-Error', 'Encoding failed');
+        }
+    } else {
+        // Log apenas se não for uma requisição de asset comum para não poluir logs
+        if (!req.path.match(/\.(css|js|png|jpg|jpeg|gif|svg|ico)$/i)) {
+             console.log(`[Trace Header] Requisição para ${req.path} não originada do Playground, X-Forward-Trace omitido.`);
+        }
+    }
+}
+// --- Fim Função Auxiliar ---
+
+
 // --- Middleware de Encaminhamento --- (Movido para ANTES do static)
 // Trata requisições que NÃO são para /api/*
 app.use(async (req, res, next) => {
@@ -244,8 +322,8 @@ app.use(async (req, res, next) => {
 
         if (config.metodo.toUpperCase() !== method.toUpperCase()) {
              traceLog['method-validation'] = { status: 'error', data: { message: `Método ${method} não permitido. Esperado: ${config.metodo}` } };
-             res.set('X-Forward-Trace', JSON.stringify(traceLog));
-             // Retorna 405 Method Not Allowed se o método não bate
+             setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
+              // Retorna 405 Method Not Allowed se o método não bate
              return res.status(405).json({ error: `Método ${method} não permitido para esta rota. Permitido: ${config.metodo}` });
         }
         traceLog['method-validation'] = { status: 'success' };
@@ -282,7 +360,7 @@ app.use(async (req, res, next) => {
         // Erros lançados por runScript serão capturados pelo catch principal (linha 412)
         if (headerValidationResult === null) { // Apenas null bloqueia explicitamente. Erros (throw/return;) são tratados no catch.
              traceLog['header-validation'] = { status: 'error', time: headerValidationDuration, data: { message: "Bloqueado pelo script (retornou null)." } };
-             res.set('X-Forward-Trace', JSON.stringify(traceLog));
+             setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
              return res.status(400).json({ error: "Requisição bloqueada pelo validador de headers (retornou null)." });
         } else {
              // Atualiza headersToSend com o resultado do script (pode ser o mesmo objeto modificado ou um novo)
@@ -318,7 +396,7 @@ app.use(async (req, res, next) => {
         // Erros lançados por runScript serão capturados pelo catch principal (linha 412)
         if (paramsValidationResult === null) { // Apenas null bloqueia explicitamente. Erros (throw/return;) são tratados no catch.
              traceLog['param-validation'] = { status: 'error', time: paramValidationDuration, data: { message: "Bloqueado pelo script (retornou null).", type: paramsType } };
-             res.set('X-Forward-Trace', JSON.stringify(traceLog));
+             setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
              return res.status(400).json({ error: `Requisição bloqueada pelo validador de parâmetros (${paramsType}, retornou null).` });
         } else {
              // Atualiza dataToSend ou paramsToSend com o resultado do script
@@ -372,7 +450,7 @@ app.use(async (req, res, next) => {
         } catch (substitutionError) {
             console.error(`[Forwarder Middleware] Erro ao substituir variáveis na URL de destino '${config.url_destino}':`, substitutionError);
             traceLog['url-substitution'] = { status: 'error', data: { template: config.url_destino, error: substitutionError.message } };
-            res.set('X-Forward-Trace', JSON.stringify(traceLog));
+            setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
             return res.status(500).json({ error: "Erro interno ao construir a URL de destino.", details: substitutionError.message });
         }
 
@@ -470,7 +548,7 @@ app.use(async (req, res, next) => {
 
         if (scriptResult instanceof Error) {
              traceLog['resp-manipulation'] = { status: 'error', time: respManipulationDuration, data: { message: "Erro interno ao executar script.", error: scriptResult.message } };
-             res.set('X-Forward-Trace', JSON.stringify(traceLog));
+             setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
              return res.status(500).json({ error: "Erro interno ao executar o script de manipulação de resposta.", details: scriptResult.message });
         }
 
@@ -542,61 +620,9 @@ app.use(async (req, res, next) => {
                 contentLength: finalResponseHeaders['content-length'] || 'N/A'
             }
         };
-        // Garantir que o header X-Forward-Trace não seja muito grande
-        // Remover dados muito grandes que podem causar problemas
-        const traceLogCopy = JSON.parse(JSON.stringify(traceLog)); // Clone profundo
-        
-        // Limitar o tamanho dos dados em cada etapa
-        Object.keys(traceLogCopy).forEach(key => {
-            if (traceLogCopy[key] && traceLogCopy[key].data) {
-                // Limitar headers para evitar headers muito grandes
-                if (traceLogCopy[key].data.headers) {
-                    const headersKeys = Object.keys(traceLogCopy[key].data.headers);
-                    if (headersKeys.length > 10) {
-                        const limitedHeaders = {};
-                        headersKeys.slice(0, 10).forEach(headerKey => {
-                            limitedHeaders[headerKey] = traceLogCopy[key].data.headers[headerKey];
-                        });
-                        limitedHeaders['...'] = `${headersKeys.length - 10} mais headers omitidos`;
-                        traceLogCopy[key].data.headers = limitedHeaders;
-                    }
-                }
-                
-                // Limitar bodyPreview para evitar corpos muito grandes
-                if (traceLogCopy[key].data.bodyPreview && traceLogCopy[key].data.bodyPreview.length > 500) {
-                    traceLogCopy[key].data.bodyPreview = traceLogCopy[key].data.bodyPreview.substring(0, 500) + '... (truncado)';
-                }
-                
-                // Limitar body para evitar corpos muito grandes
-                if (traceLogCopy[key].data.body && typeof traceLogCopy[key].data.body === 'string' && traceLogCopy[key].data.body.length > 500) {
-                    traceLogCopy[key].data.body = traceLogCopy[key].data.body.substring(0, 500) + '... (truncado)';
-                }
-            }
-        });
-        
-        const traceLogJson = JSON.stringify(traceLogCopy);
-        console.log(`Tamanho do X-Forward-Trace: ${traceLogJson.length} bytes`);
-        
-        // Se ainda for muito grande, fazer uma versão mais simplificada
-        if (traceLogJson.length > 8000) {
-            console.warn(`X-Forward-Trace muito grande (${traceLogJson.length} bytes), simplificando...`);
-            
-            // Versão simplificada com apenas status e tempo
-            const simplifiedTrace = {};
-            Object.keys(traceLogCopy).forEach(key => {
-                if (traceLogCopy[key]) {
-                    simplifiedTrace[key] = {
-                        status: traceLogCopy[key].status,
-                        time: traceLogCopy[key].time,
-                        data: { info: "Dados completos omitidos devido ao tamanho" }
-                    };
-                }
-            });
-            
-            res.set('X-Forward-Trace', JSON.stringify(simplifiedTrace));
-        } else {
-            res.set('X-Forward-Trace', traceLogJson);
-        }
+        // Define o header de trace condicionalmente e codificado
+        setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
+
         // Envia a resposta final (forward bem-sucedido)
         res.status(targetResponse.status).set(finalResponseHeaders).send(responseData);
 
@@ -612,57 +638,8 @@ app.use(async (req, res, next) => {
         traceLog.error.data.type = axios.isAxiosError(error) ? 'axios' : 'internal'; // Tipo inicial
 
         if (!res.headersSent) {
-            // Garantir que o header X-Forward-Trace não seja muito grande mesmo em caso de erro
-            const traceLogCopy = JSON.parse(JSON.stringify(traceLog)); // Clone profundo
-            
-            // Limitar o tamanho dos dados em cada etapa
-            Object.keys(traceLogCopy).forEach(key => {
-                if (traceLogCopy[key] && traceLogCopy[key].data) {
-                    // Limitar stack para evitar stacks muito grandes
-                    if (traceLogCopy[key].data.stack && traceLogCopy[key].data.stack.length > 500) {
-                        traceLogCopy[key].data.stack = traceLogCopy[key].data.stack.substring(0, 500) + '... (truncado)';
-                    }
-                    
-                    // Limitar headers para evitar headers muito grandes
-                    if (traceLogCopy[key].data.headers) {
-                        const headersKeys = Object.keys(traceLogCopy[key].data.headers);
-                        if (headersKeys.length > 10) {
-                            const limitedHeaders = {};
-                            headersKeys.slice(0, 10).forEach(headerKey => {
-                                limitedHeaders[headerKey] = traceLogCopy[key].data.headers[headerKey];
-                            });
-                            limitedHeaders['...'] = `${headersKeys.length - 10} mais headers omitidos`;
-                            traceLogCopy[key].data.headers = limitedHeaders;
-                        }
-                    }
-                }
-            });
-            
-            const traceLogJson = JSON.stringify(traceLogCopy);
-            console.log(`Tamanho do X-Forward-Trace (erro): ${traceLogJson.length} bytes`);
-            
-            // Se ainda for muito grande, fazer uma versão mais simplificada
-            if (traceLogJson.length > 8000) {
-                console.warn(`X-Forward-Trace muito grande em erro (${traceLogJson.length} bytes), simplificando...`);
-                
-                // Versão simplificada com apenas status e mensagem de erro
-                const simplifiedTrace = {};
-                Object.keys(traceLogCopy).forEach(key => {
-                    if (traceLogCopy[key]) {
-                        simplifiedTrace[key] = {
-                            status: traceLogCopy[key].status,
-                            data: {
-                                message: traceLogCopy[key].data?.message || "Erro sem mensagem",
-                                info: "Dados completos omitidos devido ao tamanho"
-                            }
-                        };
-                    }
-                });
-                
-                res.set('X-Forward-Trace', JSON.stringify(simplifiedTrace));
-            } else {
-                res.set('X-Forward-Trace', traceLogJson);
-            }
+            // Define o header de trace condicionalmente e codificado (mesmo em caso de erro)
+            setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
 
             // --- Formatação de Erro Padrão OpenAI ---
             let statusCode;

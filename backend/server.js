@@ -20,7 +20,8 @@ const PORT = process.env.BACKEND_PORT || 3001;
 app.use(cors({
   exposedHeaders: ['X-Forward-Trace'],
 }));
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '100mb' }));
+app.use(bodyParser.urlencoded({ limit: '100mb', extended: true }));
 
 // --- Rotas API --- (Movido para ANTES do static e forwarder)
 app.post('/api/auth/login', (req, res) => {

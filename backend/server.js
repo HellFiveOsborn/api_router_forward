@@ -75,7 +75,7 @@ function getDefaultPathFromUrl(urlString) {
     } catch (e) { return '/'; }
 }
 
-function runScript(script, req, sharedContext, additionalContext = {}, scriptName = 'script', timeout = 100) {
+async function runScript(script, req, sharedContext, additionalContext = {}, scriptName = 'script', timeout = 5000) { // Timeout aumentado para 5s e função agora é async
     if (!script || typeof script !== 'string' || script.trim() === '') {
         return scriptName === 'Manipulador de Resposta' ? undefined : true; // Retorna undefined para resposta, true para validadores
     }
@@ -93,6 +93,41 @@ function runScript(script, req, sharedContext, additionalContext = {}, scriptNam
     // O contexto compartilhado será acessível como 'ctx'
     const ctx = sharedContext;
 
+    // Adiciona a função fetch ao contexto, usando axios por baixo
+    ctx.fetch = async (url, options = {}) => {
+        try {
+            const axiosConfig = {
+                url,
+                method: options.method || 'GET',
+                headers: options.headers || {},
+                data: options.body,
+                // Axios usa 'params' para query string. O fetch padrão espera que a URL já contenha.
+                // Para manter a simplicidade e compatibilidade, não vamos mapear 'params' diretamente.
+                // O usuário deve construir a URL com os query params necessários.
+                responseType: 'arraybuffer', // Garante que receberemos a resposta como buffer
+                validateStatus: () => true, // Permite tratar qualquer status code na lógica do script
+            };
+
+            const response = await axios(axiosConfig);
+
+            // Simula a API de resposta do Fetch para ser usada dentro do script
+            return {
+                ok: response.status >= 200 && response.status < 300,
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+                // Funções para consumir o corpo da resposta
+                json: () => JSON.parse(Buffer.from(response.data).toString('utf8')),
+                text: () => Buffer.from(response.data).toString('utf8'),
+                buffer: () => Buffer.from(response.data),
+            };
+        } catch (error) {
+            console.error('[ctx.fetch] Erro ao executar fetch:', error.message);
+            // Relança o erro para que seja capturado pelo handler de erro do runScript
+            throw new Error(`Erro em ctx.fetch para ${url}: ${error.message}`);
+        }
+    };
+
     try {
         // Cria o sandbox com ctx, route, console, setTimeout e contexto adicional
         const sandbox = vm.createContext({
@@ -103,7 +138,6 @@ function runScript(script, req, sharedContext, additionalContext = {}, scriptNam
             ...additionalContext // Adiciona headers, params (body/query), responseBody, etc.
         });
         const wrappedScript = `(${script})`;
-        const result = vm.runInContext(wrappedScript, sandbox, { timeout });
         // Executa a função definida no script
         const scriptFunction = vm.runInContext(wrappedScript, sandbox, { timeout });
 
@@ -116,7 +150,7 @@ function runScript(script, req, sharedContext, additionalContext = {}, scriptNam
         // Chama a função do script com os argumentos apropriados baseados no nome
         if (scriptName === 'Validador de Headers') {
             // Assinatura: (headers, ctx, route) => headers | null | undefined | Error
-            return scriptFunction(additionalContext.headers, ctx, route);
+            return await scriptFunction(additionalContext.headers, ctx, route);
         }
         if (scriptName === 'Validador de Parâmetros') {
             // Assinatura: (params, ctx, route) => params | null | undefined | Error
@@ -124,7 +158,7 @@ function runScript(script, req, sharedContext, additionalContext = {}, scriptNam
             const paramsKey = Object.keys(additionalContext).find(k => k === 'body' || k === 'query');
             
             // Captura explicitamente o resultado para tratar retornos vazios (return;)
-            const result = scriptFunction(additionalContext[paramsKey], ctx, route);
+            const result = await scriptFunction(additionalContext[paramsKey], ctx, route);
             
             // Se o resultado for undefined (return; sem valor), trata como erro de validação
             if (result === undefined) {
@@ -135,7 +169,7 @@ function runScript(script, req, sharedContext, additionalContext = {}, scriptNam
         }
         if (scriptName === 'Manipulador de Resposta') {
             // Assinatura: (responseBody, responseHeaders, ctx, route) => { body, headers } | any
-            const scriptResultObject = scriptFunction(additionalContext.responseBody, additionalContext.responseHeaders, ctx, route);
+            const scriptResultObject = await scriptFunction(additionalContext.responseBody, additionalContext.responseHeaders, ctx, route);
             // Verifica se retornou o objeto esperado { body, headers }
             if (typeof scriptResultObject === 'object' && scriptResultObject !== null && typeof scriptResultObject.headers === 'object') {
                 return { body: scriptResultObject.body, headers: scriptResultObject.headers };
@@ -148,7 +182,7 @@ function runScript(script, req, sharedContext, additionalContext = {}, scriptNam
 
         // Fallback genérico (não deve ser usado com os nomes atuais)
         console.warn(`[Forwarder Middleware] Chamada genérica para ${scriptName}. Verifique a lógica.`);
-        return scriptFunction(); // Chama sem argumentos específicos se o nome não corresponder
+        return await scriptFunction(); // Chama sem argumentos específicos se o nome não corresponder
     } catch (thrownValue) {
         console.error(`[Forwarder Middleware] Erro durante a execução de ${scriptName}:`, thrownValue);
         let errorToThrow;
@@ -354,7 +388,7 @@ app.use(async (req, res, next) => {
         }
         const headerValidationStartTime = performance.now();
         // Passa headersToSend (que pode ter sido modificado) e sharedContext para o script
-        let headerValidationResult = runScript(config.headers_validator_script, req, sharedContext, { headers: headersToSend }, 'Validador de Headers');
+        let headerValidationResult = await runScript(config.headers_validator_script, req, sharedContext, { headers: headersToSend }, 'Validador de Headers');
         const headerValidationEndTime = performance.now();
         const headerValidationDuration = Math.round(headerValidationEndTime - headerValidationStartTime);
 
@@ -390,7 +424,7 @@ app.use(async (req, res, next) => {
         const paramsContext = { [paramsKey]: paramsValue }; // Contexto adicional específico para este script
         const paramValidationStartTime = performance.now();
         // Passa req, sharedContext, e o contexto adicional (body ou query)
-        let paramsValidationResult = runScript(config.params_validator_script, req, sharedContext, paramsContext, 'Validador de Parâmetros');
+        let paramsValidationResult = await runScript(config.params_validator_script, req, sharedContext, paramsContext, 'Validador de Parâmetros');
         const paramValidationEndTime = performance.now();
         const paramValidationDuration = Math.round(paramValidationEndTime - paramValidationStartTime);
 
@@ -543,7 +577,7 @@ app.use(async (req, res, next) => {
         const responseScriptContext = { responseBody: responseData, responseHeaders: { ...responseHeaders } };
         const respManipulationStartTime = performance.now();
         // Passa req, sharedContext, e o contexto adicional (responseBody, responseHeaders)
-        let scriptResult = runScript(config.response_script, req, sharedContext, responseScriptContext, 'Manipulador de Resposta');
+        let scriptResult = await runScript(config.response_script, req, sharedContext, responseScriptContext, 'Manipulador de Resposta');
         const respManipulationEndTime = performance.now();
         const respManipulationDuration = Math.round(respManipulationEndTime - respManipulationStartTime);
 

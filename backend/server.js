@@ -1,5 +1,6 @@
-require('dotenv').config({ path: '../.env' }); // Carrega variáveis do .env na raiz (variáveis de ambiente do sistema têm precedência)
 const path = require('path');
+const dotenvPath = path.resolve(__dirname, '../.env');
+require('dotenv').config({ path: dotenvPath }); // Carrega variáveis do .env na raiz (variáveis de ambiente do sistema têm precedência)
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
@@ -18,22 +19,92 @@ const PORT = process.env.BACKEND_PORT || 3001;
 
 // Middleware padrão (Removidos os validadores de caminho anteriores)
 app.use(cors({
-  exposedHeaders: ['X-Forward-Trace'],
+    exposedHeaders: ['X-Forward-Trace'],
 }));
 app.use(bodyParser.json({ limit: '100mb' }));
 app.use(bodyParser.urlencoded({ limit: '100mb', extended: true }));
 
 // --- Rotas API --- (Movido para ANTES do static e forwarder)
+app.use((req, res, next) => {
+    // Loga toda requisição recebida (método, url, headers)
+    console.log(`[GLOBAL LOG] ${req.method} ${req.originalUrl} | Content-Type: ${req.headers['content-type']}`);
+    next();
+});
+
 app.post('/api/auth/login', (req, res) => {
-  const { username, password } = req.body;
-  const validUser = process.env.USER; const validPassword = process.env.PASSWORD;
-  const jwtSecret = process.env.JWT_SECRET || 'seu_segredo_jwt_padrao';
-  if (!validUser || !validPassword) return res.status(500).json({ message: 'Erro interno: Configuração ausente.' });
-  if (jwtSecret === 'seu_segredo_jwt_padrao') console.warn("AVISO: Usando chave JWT padrão!");
-  if (username === validUser && password === validPassword) {
-    const token = jwt.sign({ username }, jwtSecret, { expiresIn: process.env.JWT_EXPIRATION || '1d' });
-    res.json({ token });
-  } else { res.status(401).json({ message: 'Credenciais inválidas' }); }
+    try {
+        // Loga o body e o Content-Type para depuração
+        console.log('[Auth] Content-Type:', req.headers['content-type']);
+        console.log('[Auth] req.body:', req.body);
+
+        let username, password;
+        // Se body vier como string, tenta parsear manualmente
+        if (typeof req.body === 'string') {
+            try {
+                const parsed = JSON.parse(req.body);
+                username = parsed.username;
+                password = parsed.password;
+                console.log('[Auth] req.body foi string, parseado manualmente:', parsed);
+            } catch (e) {
+                console.error('[Auth] Falha ao parsear req.body como JSON:', e);
+            }
+        } else if (typeof req.body === 'object' && req.body !== null) {
+            username = req.body.username;
+            password = req.body.password;
+        } else {
+            console.warn('[Auth] req.body não é objeto nem string:', typeof req.body);
+        }
+        const validUser = process.env.USER;
+        const validPassword = process.env.PASSWORD;
+        const jwtSecret = process.env.JWT_SECRET || 'seu_segredo_jwt_padrao';
+
+        // Log útil para depuração de Content-Type/body
+        if (!req.body) {
+            console.warn('[Auth] req.body está undefined. Verifique o Content-Type da requisição (use application/json). Content-Type:', req.headers['content-type']);
+        }
+
+        if (!validUser || !validPassword) {
+            console.error('[Auth] Variáveis USER e PASSWORD não definidas no .env ou ambiente.');
+            return res.status(500).json({
+                message: 'Erro interno: Configuração ausente. Defina USER e PASSWORD no arquivo .env ou nas variáveis de ambiente.',
+                details: {
+                    USER: !!validUser,
+                    PASSWORD: !!validPassword,
+                    JWT_SECRET: !!process.env.JWT_SECRET
+                }
+            });
+        }
+
+        if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
+            return res.status(400).json({ message: 'Parâmetros inválidos. Envie JSON com { "username": "...", "password": "..." }.' });
+        }
+
+        if (jwtSecret === 'seu_segredo_jwt_padrao') {
+            console.warn('AVISO: Usando chave JWT padrão!');
+        }
+
+        if (username === validUser && password === validPassword) {
+            // Sanitiza e valida o expiresIn para evitar erro 500 quando valor inválido (ex.: 1d")
+            let expiresIn = process.env.JWT_EXPIRATION || '1d';
+            let token;
+            try {
+                token = jwt.sign({ username }, jwtSecret, { expiresIn });
+            } catch (e) {
+                console.error('[Auth] Valor inválido em JWT_EXPIRATION:', expiresIn, '— usando fallback "1d". Detalhe:', e && e.message);
+                token = jwt.sign({ username }, jwtSecret, { expiresIn: '1d' });
+            }
+            return res.json({ token });
+        }
+
+        return res.status(401).json({ message: 'Credenciais inválidas' });
+    } catch (err) {
+        console.error('[Auth] Erro inesperado no login:', err);
+        if (err && err.stack) {
+            console.error('[Auth] Stack trace:', err.stack);
+        }
+        // Não delega para o error handler global para evitar mascarar a mensagem em produção
+        return res.status(500).json({ message: 'Erro interno no processo de autenticação.', details: err && err.message });
+    }
 });
 app.get('/api/ping', (req, res) => res.json({ message: 'pong' }));
 const forwardsRouter = require('./routes/forwards');
@@ -45,24 +116,24 @@ const dbDir = path.join(__dirname, 'db');
 const dbPath = path.join(dbDir, 'database.sqlite');
 
 if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+    fs.mkdirSync(dbDir, { recursive: true });
 }
 
 const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) {
-    console.error('Erro ao conectar ao banco de dados SQLite:', err.message);
-  } else {
-    console.log(`Conectado ao banco de dados SQLite em: ${dbPath}`);
-    db.run(`CREATE TABLE IF NOT EXISTS forwards (
+    if (err) {
+        console.error('Erro ao conectar ao banco de dados SQLite:', err.message);
+    } else {
+        // console.log(`Conectado ao banco de dados SQLite em: ${dbPath}`);
+        db.run(`CREATE TABLE IF NOT EXISTS forwards (
       id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT UNIQUE NOT NULL, slug TEXT UNIQUE NOT NULL,
       custom_route TEXT, url_destino TEXT NOT NULL, metodo TEXT NOT NULL,
       headers_in_config TEXT, headers_out_config TEXT, params_config TEXT,
       headers_validator_script TEXT, params_validator_script TEXT, response_script TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`, (err) => {
-      if (err) console.error("Erro ao criar tabela 'forwards':", err.message);
-    });
-  }
+            if (err) console.error("Erro ao criar tabela 'forwards':", err.message);
+        });
+    }
 });
 // --- Fim Configuração do Banco de Dados ---
 
@@ -156,15 +227,15 @@ async function runScript(script, req, sharedContext, additionalContext = {}, scr
             // Assinatura: (params, ctx, route) => params | null | undefined | Error
             // 'params' será o body ou query_params dependendo do método
             const paramsKey = Object.keys(additionalContext).find(k => k === 'body' || k === 'query');
-            
+
             // Captura explicitamente o resultado para tratar retornos vazios (return;)
             const result = await scriptFunction(additionalContext[paramsKey], ctx, route);
-            
+
             // Se o resultado for undefined (return; sem valor), trata como erro de validação
             if (result === undefined) {
                 throw new Error("Validação falhou sem mensagem específica");
             }
-            
+
             return result;
         }
         if (scriptName === 'Manipulador de Resposta') {
@@ -174,9 +245,9 @@ async function runScript(script, req, sharedContext, additionalContext = {}, scr
             if (typeof scriptResultObject === 'object' && scriptResultObject !== null && typeof scriptResultObject.headers === 'object') {
                 return { body: scriptResultObject.body, headers: scriptResultObject.headers };
             } else {
-                 console.warn(`[Forwarder Middleware] ${scriptName} não retornou um objeto { body, headers } válido. Usando retorno direto como corpo.`);
-                 // Retorna o resultado direto como corpo e os headers originais da resposta
-                 return { body: scriptResultObject, headers: additionalContext.responseHeaders };
+                console.warn(`[Forwarder Middleware] ${scriptName} não retornou um objeto { body, headers } válido. Usando retorno direto como corpo.`);
+                // Retorna o resultado direto como corpo e os headers originais da resposta
+                return { body: scriptResultObject, headers: additionalContext.responseHeaders };
             }
         }
 
@@ -193,10 +264,10 @@ async function runScript(script, req, sharedContext, additionalContext = {}, scr
             errorToThrow.code = thrownValue.code; // Copia code se existir
             errorToThrow.param = thrownValue.param; // Copia param se existir
         } else if (thrownValue instanceof Error) {
-             errorToThrow = thrownValue; // Já é um Error
+            errorToThrow = thrownValue; // Já é um Error
         } else {
-             // Se lançou algo que não é Error nem objeto com message, converte para Error
-             errorToThrow = new Error(String(thrownValue));
+            // Se lançou algo que não é Error nem objeto com message, converte para Error
+            errorToThrow = new Error(String(thrownValue));
         }
 
         // Adiciona propriedades para identificar erros de script
@@ -242,14 +313,14 @@ function setTraceHeaderIfNeeded(req, res, traceLog) {
                         data.stack = data.stack.substring(0, 500) + '... (truncado)';
                     }
                     // Limitar queryParams (exemplo)
-                     if (data.queryParams) {
+                    if (data.queryParams) {
                         const queryString = JSON.stringify(data.queryParams);
                         if (queryString.length > 300) {
                             data.queryParams = { info: `Query Params omitidos (${queryString.length} bytes)` };
                         }
                     }
-                     // Limitar routeParams (exemplo)
-                     if (data.routeParams) {
+                    // Limitar routeParams (exemplo)
+                    if (data.routeParams) {
                         const paramsString = JSON.stringify(data.routeParams);
                         if (paramsString.length > 200) {
                             data.routeParams = { info: `Route Params omitidos (${paramsString.length} bytes)` };
@@ -279,7 +350,7 @@ function setTraceHeaderIfNeeded(req, res, traceLog) {
     } else {
         // Log apenas se não for uma requisição de asset comum para não poluir logs
         if (!req.path.match(/\.(css|js|png|jpg|jpeg|gif|svg|ico)$/i)) {
-             console.log(`[Trace Header] Requisição para ${req.path} não originada do Playground, X-Forward-Trace omitido.`);
+            console.log(`[Trace Header] Requisição para ${req.path} não originada do Playground, X-Forward-Trace omitido.`);
         }
     }
 }
@@ -289,8 +360,8 @@ function setTraceHeaderIfNeeded(req, res, traceLog) {
 // --- Middleware de Encaminhamento --- (Movido para ANTES do static)
 // Trata requisições que NÃO são para /api/*
 app.use(async (req, res, next) => {
-    // Se for rota da API, já foi tratada acima, então passa para o próximo (static/404)
-    if (req.path.startsWith('/api/')) {
+    // Se for rota da API (com ou sem barra no final), passa para o próximo handler (static/404)
+    if (req.path === '/api' || req.path.startsWith('/api')) {
         console.log(`[Router] Passando rota API ${req.path} para próximo handler (static/404)`);
         return next();
     }
@@ -356,10 +427,10 @@ app.use(async (req, res, next) => {
         console.log(`[Forwarder Middleware] Usando configuração: ${config.nome}`);
 
         if (config.metodo.toUpperCase() !== method.toUpperCase()) {
-             traceLog['method-validation'] = { status: 'error', data: { message: `Método ${method} não permitido. Esperado: ${config.metodo}` } };
-             setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
-              // Retorna 405 Method Not Allowed se o método não bate
-             return res.status(405).json({ error: `Método ${method} não permitido para esta rota. Permitido: ${config.metodo}` });
+            traceLog['method-validation'] = { status: 'error', data: { message: `Método ${method} não permitido. Esperado: ${config.metodo}` } };
+            setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
+            // Retorna 405 Method Not Allowed se o método não bate
+            return res.status(405).json({ error: `Método ${method} não permitido para esta rota. Permitido: ${config.metodo}` });
         }
         traceLog['method-validation'] = { status: 'success' };
 
@@ -394,23 +465,23 @@ app.use(async (req, res, next) => {
 
         // Erros lançados por runScript serão capturados pelo catch principal (linha 412)
         if (headerValidationResult === null) { // Apenas null bloqueia explicitamente. Erros (throw/return;) são tratados no catch.
-             traceLog['header-validation'] = { status: 'error', time: headerValidationDuration, data: { message: "Bloqueado pelo script (retornou null)." } };
-             setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
-             return res.status(400).json({ error: "Requisição bloqueada pelo validador de headers (retornou null)." });
+            traceLog['header-validation'] = { status: 'error', time: headerValidationDuration, data: { message: "Bloqueado pelo script (retornou null)." } };
+            setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
+            return res.status(400).json({ error: "Requisição bloqueada pelo validador de headers (retornou null)." });
         } else {
-             // Atualiza headersToSend com o resultado do script (pode ser o mesmo objeto modificado ou um novo)
-             headersToSend = headerValidationResult;
-             // Incluir mais detalhes sobre a validação de headers
-             traceLog['header-validation'] = {
-                 status: 'success',
-                 time: headerValidationDuration,
-                 data: {
-                     headersAfterScript: headersToSend,
-                     script: config.headers_validator_script ? "Script executado com sucesso" : "Sem script configurado",
-                     scriptLength: config.headers_validator_script ? config.headers_validator_script.length : 0,
-                     headersModified: JSON.stringify(requestHeaders) !== JSON.stringify(headersToSend)
-                 }
-             };
+            // Atualiza headersToSend com o resultado do script (pode ser o mesmo objeto modificado ou um novo)
+            headersToSend = headerValidationResult;
+            // Incluir mais detalhes sobre a validação de headers
+            traceLog['header-validation'] = {
+                status: 'success',
+                time: headerValidationDuration,
+                data: {
+                    headersAfterScript: headersToSend,
+                    script: config.headers_validator_script ? "Script executado com sucesso" : "Sem script configurado",
+                    scriptLength: config.headers_validator_script ? config.headers_validator_script.length : 0,
+                    headersModified: JSON.stringify(requestHeaders) !== JSON.stringify(headersToSend)
+                }
+            };
         }
 
         // Validação/Modificação de Parâmetros (Scripts podem adicionar dados ao sharedContext)
@@ -430,28 +501,28 @@ app.use(async (req, res, next) => {
 
         // Erros lançados por runScript serão capturados pelo catch principal (linha 412)
         if (paramsValidationResult === null) { // Apenas null bloqueia explicitamente. Erros (throw/return;) são tratados no catch.
-             traceLog['param-validation'] = { status: 'error', time: paramValidationDuration, data: { message: "Bloqueado pelo script (retornou null).", type: paramsType } };
-             setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
-             return res.status(400).json({ error: `Requisição bloqueada pelo validador de parâmetros (${paramsType}, retornou null).` });
+            traceLog['param-validation'] = { status: 'error', time: paramValidationDuration, data: { message: "Bloqueado pelo script (retornou null).", type: paramsType } };
+            setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
+            return res.status(400).json({ error: `Requisição bloqueada pelo validador de parâmetros (${paramsType}, retornou null).` });
         } else {
-             // Atualiza dataToSend ou paramsToSend com o resultado do script
-             if (paramsType === 'body') dataToSend = paramsValidationResult;
-             else paramsToSend = paramsValidationResult;
-             // Incluir mais detalhes sobre a validação de parâmetros
-             traceLog['param-validation'] = {
-                 status: 'success',
-                 time: paramValidationDuration,
-                 data: {
-                     paramsAfterScript: paramsValidationResult,
-                     type: paramsType,
-                     script: config.params_validator_script ? "Script executado com sucesso" : "Sem script configurado",
-                     scriptLength: config.params_validator_script ? config.params_validator_script.length : 0,
-                     paramsModified: JSON.stringify(paramsValue) !== JSON.stringify(paramsValidationResult)
-                 }
-             };
+            // Atualiza dataToSend ou paramsToSend com o resultado do script
+            if (paramsType === 'body') dataToSend = paramsValidationResult;
+            else paramsToSend = paramsValidationResult;
+            // Incluir mais detalhes sobre a validação de parâmetros
+            traceLog['param-validation'] = {
+                status: 'success',
+                time: paramValidationDuration,
+                data: {
+                    paramsAfterScript: paramsValidationResult,
+                    type: paramsType,
+                    script: config.params_validator_script ? "Script executado com sucesso" : "Sem script configurado",
+                    scriptLength: config.params_validator_script ? config.params_validator_script.length : 0,
+                    paramsModified: JSON.stringify(paramsValue) !== JSON.stringify(paramsValidationResult)
+                }
+            };
         }
 
-       // Construção FINAL da URL de Destino com substituição de variáveis do contexto
+        // Construção FINAL da URL de Destino com substituição de variáveis do contexto
         let targetUrl = config.url_destino;
         try {
             // Substitui {variavel} por valores de ctx (incluindo ctx.routeParams)
@@ -466,8 +537,8 @@ app.use(async (req, res, next) => {
 
             // Verifica se ainda existem placeholders não substituídos (opcional, pode indicar erro de config)
             if (/\{[^}]+\}/.test(targetUrl)) {
-                 console.warn(`[Forwarder Middleware] URL de destino ainda contém placeholders não substituídos: ${targetUrl}`);
-                 // Considerar lançar erro se for crítico: throw new Error("Parâmetros ausentes para a URL de destino.");
+                console.warn(`[Forwarder Middleware] URL de destino ainda contém placeholders não substituídos: ${targetUrl}`);
+                // Considerar lançar erro se for crítico: throw new Error("Parâmetros ausentes para a URL de destino.");
             }
 
             console.log(`[Forwarder Middleware] URL de Destino Substituída: ${targetUrl}`);
@@ -499,11 +570,11 @@ app.use(async (req, res, next) => {
         console.log(`  Query Params: ${JSON.stringify(paramsToSend, null, 2)}`);
         // Logar o corpo apenas se existir e for razoavelmente pequeno (ou um tipo específico)
         if (dataToSend && typeof dataToSend !== 'object') { // Evita logar buffers grandes diretamente
-             console.log(`  Body (dataToSend): ${JSON.stringify(dataToSend)}`);
+            console.log(`  Body (dataToSend): ${JSON.stringify(dataToSend)}`);
         } else if (dataToSend) {
-             console.log(`  Body (dataToSend): [Object/Buffer]`); // Indica que há um corpo, mas não loga o conteúdo completo
+            console.log(`  Body (dataToSend): [Object/Buffer]`); // Indica que há um corpo, mas não loga o conteúdo completo
         } else {
-             console.log(`  Body (dataToSend): null`);
+            console.log(`  Body (dataToSend): null`);
         }
         console.log(`-------------------------------------------------`);
         // --- FIM DEBUG ---
@@ -556,7 +627,7 @@ app.use(async (req, res, next) => {
         } catch (e) {
             responseBodyPreview = 'Não foi possível processar o corpo da resposta: ' + e.message;
         }
-        
+
         traceLog['resp-received'] = {
             status: 'success',
             time: requestDuration,
@@ -570,7 +641,7 @@ app.use(async (req, res, next) => {
             }
         };
 
-       // Manipulação da Resposta
+        // Manipulação da Resposta
         let responseData = targetResponse.data;
         let responseHeaders = { ...targetResponse.headers };
         // Prepara o contexto adicional para o script de resposta
@@ -582,9 +653,9 @@ app.use(async (req, res, next) => {
         const respManipulationDuration = Math.round(respManipulationEndTime - respManipulationStartTime);
 
         if (scriptResult instanceof Error) {
-             traceLog['resp-manipulation'] = { status: 'error', time: respManipulationDuration, data: { message: "Erro interno ao executar script.", error: scriptResult.message } };
-             setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
-             return res.status(500).json({ error: "Erro interno ao executar o script de manipulação de resposta.", details: scriptResult.message });
+            traceLog['resp-manipulation'] = { status: 'error', time: respManipulationDuration, data: { message: "Erro interno ao executar script.", error: scriptResult.message } };
+            setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
+            return res.status(500).json({ error: "Erro interno ao executar o script de manipulação de resposta.", details: scriptResult.message });
         }
 
         let finalResponseHeaders = { ...responseHeaders };
@@ -597,11 +668,11 @@ app.use(async (req, res, next) => {
             if (headersModifiedByScript) console.log("[Forwarder Middleware] Headers da resposta modificados pelo script.");
 
             if (scriptResult.body !== undefined) {
-                 bodyModifiedByScript = !Buffer.isBuffer(scriptResult.body) || !Buffer.isBuffer(responseData) || Buffer.compare(responseData, scriptResult.body) !== 0;
-                 if (bodyModifiedByScript) console.log("[Forwarder Middleware] Corpo da resposta modificado pelo script (via objeto retornado).");
-                 responseData = scriptResult.body;
+                bodyModifiedByScript = !Buffer.isBuffer(scriptResult.body) || !Buffer.isBuffer(responseData) || Buffer.compare(responseData, scriptResult.body) !== 0;
+                if (bodyModifiedByScript) console.log("[Forwarder Middleware] Corpo da resposta modificado pelo script (via objeto retornado).");
+                responseData = scriptResult.body;
             } else {
-                 bodyModifiedByScript = false;
+                bodyModifiedByScript = false;
             }
             // Incluir mais detalhes sobre a manipulação da resposta
             traceLog['resp-manipulation'] = {
@@ -618,14 +689,14 @@ app.use(async (req, res, next) => {
             };
 
         } else if (scriptResult !== undefined && scriptResult !== true) {
-             console.warn("[Forwarder Middleware] Script de resposta não retornou { body, headers }.");
-             bodyModifiedByScript = !Buffer.isBuffer(scriptResult) || !Buffer.isBuffer(responseData) || Buffer.compare(responseData, scriptResult) !== 0;
-              if (bodyModifiedByScript) console.log("[Forwarder Middleware] Corpo da resposta modificado pelo script (retorno direto).");
-             responseData = scriptResult;
-             traceLog['resp-manipulation'] = { status: 'warning', time: respManipulationDuration, data: { returnType: 'direct_body', message: "Script não retornou { body, headers }.", bodyModified: bodyModifiedByScript, finalHeaders: finalResponseHeaders } };
+            console.warn("[Forwarder Middleware] Script de resposta não retornou { body, headers }.");
+            bodyModifiedByScript = !Buffer.isBuffer(scriptResult) || !Buffer.isBuffer(responseData) || Buffer.compare(responseData, scriptResult) !== 0;
+            if (bodyModifiedByScript) console.log("[Forwarder Middleware] Corpo da resposta modificado pelo script (retorno direto).");
+            responseData = scriptResult;
+            traceLog['resp-manipulation'] = { status: 'warning', time: respManipulationDuration, data: { returnType: 'direct_body', message: "Script não retornou { body, headers }.", bodyModified: bodyModifiedByScript, finalHeaders: finalResponseHeaders } };
         } else {
-             bodyModifiedByScript = false;
-             traceLog['resp-manipulation'] = { status: 'success', time: respManipulationDuration, data: { returnType: typeof scriptResult, info: "Nenhuma modificação aplicada pelo script.", finalHeaders: finalResponseHeaders } };
+            bodyModifiedByScript = false;
+            traceLog['resp-manipulation'] = { status: 'success', time: respManipulationDuration, data: { returnType: typeof scriptResult, info: "Nenhuma modificação aplicada pelo script.", finalHeaders: finalResponseHeaders } };
         }
 
         // Limpeza final dos headers
@@ -717,7 +788,7 @@ app.use(async (req, res, next) => {
                     finalErrorResponse.error.code = 'script_timeout';
                     statusCode = 504; // Gateway Timeout
                 } else if (error.message.toLowerCase().includes('formato inválido')) {
-                     finalErrorResponse.error.code = 'invalid_format';
+                    finalErrorResponse.error.code = 'invalid_format';
                 } // Adicionar mais mapeamentos aqui...
 
                 console.error(`[Forwarder Middleware] Erro no ${error.scriptName}:`, finalErrorResponse.error);
@@ -752,82 +823,82 @@ app.use(async (req, res, next) => {
 // --- Servir Frontend Estático e SPA Fallback ---
 // Deve vir DEPOIS da API e do Forwarder
 const frontendDistPath = path.join(__dirname, 'frontend_dist'); // Usar join relativo ao diretório atual
-console.log(`[Server] Verificando existência de frontend em: ${frontendDistPath}`); // Log para depuração
+// console.log(`[Server] Verificando existência de frontend em: ${frontendDistPath}`); // Log para depuração
 if (fs.existsSync(frontendDistPath)) {
-  console.log(`Servindo arquivos estáticos do frontend de: ${frontendDistPath}`);
-  // Serve arquivos estáticos
-  app.use(express.static(frontendDistPath, {
-      // Não chama next() se o arquivo não for encontrado,
-      // permitindo que o próximo handler (sendFile) atue como fallback.
-      fallthrough: false
-  }));
-  // Fallback para index.html para rotas SPA (requisições não-API/não-forward/não-arquivo-estático)
-  app.use((req, res, next) => {
-      // Verifica novamente se não é API (redundante, mas seguro)
-      if (!req.path.startsWith('/api/')) {
-          const indexPath = path.resolve(frontendDistPath, 'index.html'); // Usar resolve aqui também
-          if (fs.existsSync(indexPath)) {
-              console.log(`[SPA Fallback] Servindo index.html para: ${req.originalUrl}`);
-              res.sendFile(indexPath);
-          } else {
-              console.error(`[SPA Fallback] Arquivo index.html não encontrado em ${frontendDistPath}`);
-              // Se o index.html não existe, realmente é um 404
-              res.status(404).json({ error: "Arquivo index.html do frontend não encontrado no build." });
-          }
-      } else {
-          // Se chegou aqui como /api/*, é um 404 da API
-          next();
-      }
-  });
+    console.log(`Servindo arquivos estáticos do frontend de: ${frontendDistPath}`);
+    // Serve arquivos estáticos apenas para rotas que NÃO são /api
+    // Usa fallthrough: true para deixar o SPA fallback resolver quando o arquivo não existir
+    app.use((req, res, next) => {
+        if (req.path.startsWith('/api')) return next();
+        return express.static(frontendDistPath, { fallthrough: true })(req, res, next);
+    });
+    // Fallback para index.html para rotas SPA (requisições não-API/não-forward/não-arquivo-estático)
+    app.use((req, res, next) => {
+        // Verifica novamente se não é API (qualquer rota que comece com /api)
+        if (!req.path.startsWith('/api')) {
+            const indexPath = path.resolve(frontendDistPath, 'index.html'); // Usar resolve aqui também
+            if (fs.existsSync(indexPath)) {
+                console.log(`[SPA Fallback] Servindo index.html para: ${req.originalUrl}`);
+                res.sendFile(indexPath);
+            } else {
+                console.error(`[SPA Fallback] Arquivo index.html não encontrado em ${frontendDistPath}`);
+                // Se o index.html não existe, realmente é um 404
+                res.status(404).json({ error: "Arquivo index.html do frontend não encontrado no build." });
+            }
+        } else {
+            // Se chegou aqui como /api (com ou sem barra), deixa a cadeia seguir para 404 JSON da API
+            next();
+        }
+    });
 } else {
-  console.warn(`Diretório do frontend buildado (${frontendDistPath}) não encontrado. O frontend não será servido.`);
+    // console.warn(`Diretório do frontend buildado (${frontendDistPath}) não encontrado. O frontend não será servido.`);
 }
 // --- Fim Servir Frontend Estático e SPA Fallback ---
 
 
 // --- Middleware 404 Personalizado ---
 app.use((req, res, next) => {
-  console.log(`[404 Handler] Rota não encontrada: ${req.method} ${req.originalUrl}`);
-  res.status(404).json({
-    error: "Rota não encontrada",
-    message: `O caminho solicitado '${req.originalUrl}' com o método ${req.method} não corresponde a nenhuma API ou configuração de forward válida.`,
-    requestedPath: req.originalUrl,
-    method: req.method
-  });
+    console.log(`[404 Handler] Rota não encontrada: ${req.method} ${req.originalUrl}`);
+    res.status(404).json({
+        error: "Rota não encontrada",
+        message: `O caminho solicitado '${req.originalUrl}' com o método ${req.method} não corresponde a nenhuma API ou configuração de forward válida.`,
+        requestedPath: req.originalUrl,
+        method: req.method
+    });
 });
 
 
 // --- Middleware de tratamento de erros (FINAL) ---
 // Captura erros específicos do path-to-regexp e outros erros
 app.use((err, req, res, next) => {
-  // Verifica se é o erro específico do path-to-regexp
-  if (err instanceof TypeError && err.message.startsWith('Missing parameter name')) {
-    console.warn(`[Error Handler] Capturado erro de parâmetro ausente para ${req.originalUrl}: ${err.message}`);
-    return res.status(400).json({
-      error: "Caminho da requisição inválido.",
-      message: "O caminho contém um padrão de parâmetro inválido ou malformado.",
-      details: err.message
-    });
-  }
+    // Verifica se é o erro específico do path-to-regexp
+    if (err instanceof TypeError && err.message.startsWith('Missing parameter name')) {
+        console.warn(`[Error Handler] Capturado erro de parâmetro ausente para ${req.originalUrl}: ${err.message}`);
+        return res.status(400).json({
+            error: "Caminho da requisição inválido.",
+            message: "O caminho contém um padrão de parâmetro inválido ou malformado.",
+            details: err.message
+        });
+    }
 
-  // Tratamento de outros erros
-  console.error("[Erro Não Tratado]", err.stack || err);
-  const statusCode = err.status || err.statusCode || 500; // Usa status do erro se disponível
-  const errorResponse = process.env.NODE_ENV === 'production' && statusCode === 500
-      ? { error: 'Erro interno do servidor.' }
-      : { error: err.message || 'Erro interno do servidor.', details: err.stack }; // Mostra mais detalhes em dev ou para erros não-500
+    // Tratamento de outros erros
+    console.error("[Erro Não Tratado]", err.stack || err);
+    const statusCode = err.status || err.statusCode || 500; // Usa status do erro se disponível
+    const errorResponse = process.env.NODE_ENV === 'production' && statusCode === 500
+        ? { error: 'Erro interno do servidor.' }
+        : { error: err.message || 'Erro interno do servidor.', details: err.stack }; // Mostra mais detalhes em dev ou para erros não-500
 
-  // Garante que a resposta não foi enviada ainda
-  if (!res.headersSent) {
-    res.status(statusCode).json(errorResponse);
-  } else {
-    // Se headers já foram enviados, apenas loga e encerra
-     console.error("[Error Handler] Headers já enviados, não foi possível enviar resposta de erro JSON.");
-     next(err); // Delega para o handler padrão do Express
-  }
+    // Garante que a resposta não foi enviada ainda
+    if (!res.headersSent) {
+        res.status(statusCode).json(errorResponse);
+    } else {
+        // Se headers já foram enviados, apenas loga e encerra
+        console.error("[Error Handler] Headers já enviados, não foi possível enviar resposta de erro JSON.");
+        next(err); // Delega para o handler padrão do Express
+    }
 });
 
 // Iniciar o servidor
 app.listen(PORT, () => {
-  console.log(`Backend rodando na porta ${PORT}`);
+    console.log(`Backend rodando na porta ${PORT}`);
 });

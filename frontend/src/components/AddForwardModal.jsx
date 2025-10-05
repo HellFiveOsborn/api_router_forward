@@ -21,18 +21,18 @@ const editorStyles = {
 
 // Função auxiliar para parsear JSON de configuração com segurança
 const parseJsonConfig = (jsonStringOrObject, defaultValue) => {
-    if (typeof jsonStringOrObject === 'object' && jsonStringOrObject !== null) {
-        return jsonStringOrObject;
+  if (typeof jsonStringOrObject === 'object' && jsonStringOrObject !== null) {
+    return jsonStringOrObject;
+  }
+  if (typeof jsonStringOrObject === 'string') {
+    try {
+      return JSON.parse(jsonStringOrObject);
+    } catch (e) {
+      console.warn("Falha ao parsear config JSON, usando default:", jsonStringOrObject, e);
+      return defaultValue;
     }
-    if (typeof jsonStringOrObject === 'string') {
-        try {
-            return JSON.parse(jsonStringOrObject);
-        } catch (e) {
-            console.warn("Falha ao parsear config JSON, usando default:", jsonStringOrObject, e);
-            return defaultValue;
-        }
-    }
-    return defaultValue;
+  }
+  return defaultValue;
 };
 
 
@@ -55,66 +55,69 @@ function AddForwardModal({ isOpen, onClose, forwardData, onSave }) {
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
   const [importedConfig, setImportedConfig] = useState(null);
   const fileInputRef = useRef(null);
+  const [activeTab, setActiveTab] = useState('headers');
 
   useEffect(() => {
     if (isOpen) {
-        if (isEditing && forwardData) {
-          setFormData({
-            ...initialFormData, ...forwardData,
-            // Garante que configs sejam objetos e scripts sejam strings
-            headers_in_config: parseJsonConfig(forwardData.headers_in_config, {}),
-            headers_out_config: parseJsonConfig(forwardData.headers_out_config, {}),
-            params_config: parseJsonConfig(forwardData.params_config, { type: forwardData.metodo === 'GET' ? 'query' : 'body' }),
-            headers_validator_script: forwardData.headers_validator_script || initialFormData.headers_validator_script,
-            params_validator_script: forwardData.params_validator_script || initialFormData.params_validator_script,
-            response_script: forwardData.response_script || initialFormData.response_script,
-          });
-        } else {
-          setFormData(initialFormData);
-        }
-        setError('');
+      if (isEditing && forwardData) {
+        setFormData({
+          ...initialFormData, ...forwardData,
+          // Garante que configs sejam objetos e scripts sejam strings
+          headers_in_config: parseJsonConfig(forwardData.headers_in_config, {}),
+          headers_out_config: parseJsonConfig(forwardData.headers_out_config, {}),
+          params_config: parseJsonConfig(forwardData.params_config, { type: forwardData.metodo === 'GET' ? 'query' : 'body' }),
+          headers_validator_script: forwardData.headers_validator_script || initialFormData.headers_validator_script,
+          params_validator_script: forwardData.params_validator_script || initialFormData.params_validator_script,
+          response_script: forwardData.response_script || initialFormData.response_script,
+        });
+      } else {
+        setFormData(initialFormData);
+      }
+      // Reseta a aba ativa sempre que o modal abrir
+      setActiveTab('headers');
+      setError('');
     }
   }, [isOpen, isEditing, forwardData]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => {
-        const newState = { ...prev, [name]: value };
+      const newState = { ...prev, [name]: value };
 
-        // Ajusta o tipo de params_config baseado no método HTTP
-        if (name === 'metodo') {
-            newState.params_config = {
-                ...(newState.params_config || {}),
-                type: ['POST', 'PUT', 'PATCH'].includes(value) ? 'body' : 'query'
-            };
+      // Ajusta o tipo de params_config baseado no método HTTP
+      if (name === 'metodo') {
+        newState.params_config = {
+          ...(newState.params_config || {}),
+          type: ['POST', 'PUT', 'PATCH'].includes(value) ? 'body' : 'query'
+        };
+      }
+
+      // Auto-preenche Rota Customizada se URL de Destino for válida e Rota Customizada estiver vazia
+      if (name === 'url_destino' && (!prev.custom_route || prev.custom_route === '')) {
+        try {
+          // Usa a mesma lógica do helper do backend/frontend para extrair o path
+          const base = value.startsWith('/') ? window.location.origin : undefined;
+          const parsedUrl = new URL(value, base);
+          const pathname = parsedUrl.pathname || '/';
+          const defaultPath = pathname === '/' ? '/' : pathname.replace(/\/$/, ''); // Remove barra final
+          if (defaultPath) {
+            newState.custom_route = defaultPath;
+            console.log("Rota customizada sugerida:", defaultPath);
+          }
+        } catch (urlError) {
+          // URL inválida, não faz nada.
+          // console.warn("URL de destino inválida para sugestão de rota:", value);
         }
+      }
 
-        // Auto-preenche Rota Customizada se URL de Destino for válida e Rota Customizada estiver vazia
-        if (name === 'url_destino' && (!prev.custom_route || prev.custom_route === '')) {
-            try {
-                // Usa a mesma lógica do helper do backend/frontend para extrair o path
-                const base = value.startsWith('/') ? window.location.origin : undefined;
-                const parsedUrl = new URL(value, base);
-                const pathname = parsedUrl.pathname || '/';
-                const defaultPath = pathname === '/' ? '/' : pathname.replace(/\/$/, ''); // Remove barra final
-                if (defaultPath) {
-                    newState.custom_route = defaultPath;
-                    console.log("Rota customizada sugerida:", defaultPath);
-                }
-            } catch (urlError) {
-                // URL inválida, não faz nada.
-                // console.warn("URL de destino inválida para sugestão de rota:", value);
-            }
-        }
-
-        return newState;
+      return newState;
     });
   };
 
   // handleConfigChange não é mais necessário pois removemos os inputs de drop
 
   const handleScriptChange = (scriptField, value) => {
-     setFormData(prev => ({ ...prev, [scriptField]: value }));
+    setFormData(prev => ({ ...prev, [scriptField]: value }));
   };
 
   // Função para lidar com o clique no botão de importação
@@ -131,7 +134,7 @@ function AddForwardModal({ isOpen, onClose, forwardData, onSave }) {
     reader.onload = (e) => {
       try {
         const importedData = JSON.parse(e.target.result);
-        
+
         // Verificar se o arquivo tem o formato esperado (array de objetos ou objeto único)
         if (Array.isArray(importedData) && importedData.length > 0) {
           // Se for um array, pegar o primeiro item
@@ -147,16 +150,16 @@ function AddForwardModal({ isOpen, onClose, forwardData, onSave }) {
       } catch (error) {
         setError(`Erro ao processar o arquivo: ${error.message}`);
       }
-      
+
       // Limpar o input para permitir selecionar o mesmo arquivo novamente
       event.target.value = '';
     };
-    
+
     reader.onerror = () => {
       setError('Erro ao ler o arquivo.');
       event.target.value = '';
     };
-    
+
     reader.readAsText(file);
   };
 
@@ -177,12 +180,12 @@ function AddForwardModal({ isOpen, onClose, forwardData, onSave }) {
         params_validator_script: importedConfig.params_validator_script || initialFormData.params_validator_script,
         response_script: importedConfig.response_script || initialFormData.response_script,
       };
-      
+
       // Remover o ID se estiver presente (para evitar conflitos ao criar novo)
       if (!isEditing && configToApply.id) {
         delete configToApply.id;
       }
-      
+
       // Aplicar a configuração importada
       setFormData(configToApply);
       setShowConfirmDialog(false);
@@ -202,12 +205,12 @@ function AddForwardModal({ isOpen, onClose, forwardData, onSave }) {
     setError('');
     try {
       const dataToSend = {
-          ...formData,
-          custom_route: formData.custom_route || null,
-          // Garante que configs sejam strings JSON ao enviar
-          headers_in_config: JSON.stringify(formData.headers_in_config || {}),
-          headers_out_config: JSON.stringify(formData.headers_out_config || {}),
-          params_config: JSON.stringify(formData.params_config || {}),
+        ...formData,
+        custom_route: formData.custom_route || null,
+        // Garante que configs sejam strings JSON ao enviar
+        headers_in_config: JSON.stringify(formData.headers_in_config || {}),
+        headers_out_config: JSON.stringify(formData.headers_out_config || {}),
+        params_config: JSON.stringify(formData.params_config || {}),
       };
       let savedForward;
       if (isEditing) {
@@ -268,79 +271,87 @@ function AddForwardModal({ isOpen, onClose, forwardData, onSave }) {
                 <label className="label pb-1"><span className="label-text">Rota Customizada (Opcional, com parâmetros)</span></label>
                 <input type="text" name="custom_route" placeholder="/v1/users/{userId}/posts/{postId}" className="input input-bordered w-full" value={formData.custom_route || ''} onChange={handleChange} disabled={loading} />
               </div>
-               <div className="label pt-1 pb-0"><span className="label-text-alt text-xs text-opacity-70">Define o início do caminho após o slug (ex: `/v1/items/{'{id}'}`). Parâmetros {'{}'} estarão em `sharedContext.routeParams`. Se vazio, usa o path da URL de Destino.</span></div>
+              <div className="label pt-1 pb-0"><span className="label-text-alt text-xs text-opacity-70">Define o início do caminho após o slug (ex: `/v1/items/{'{id}'}`). Parâmetros {'{}'} estarão em `sharedContext.routeParams`. Se vazio, usa o path da URL de Destino.</span></div>
             </div>
           </div>
 
-           {/* Configurações Avançadas - Separadas em Acordeões */}
-           <div className="space-y-3 mt-6">
-                <h3 className="text-lg font-medium mb-2">Configurações Avançadas</h3>
-
-                 {/* Headers de Entrada */}
-                 <div className="collapse collapse-arrow bg-base-200 border border-base-300 rounded-box">
-                    <input type="checkbox" className="peer" />
-                    <div className="collapse-title font-medium peer-checked:bg-base-300">Headers de Entrada (Validação e Modificação)</div> {/* Título ajustado */}
-                    <div className="collapse-content bg-base-100 peer-checked:border-t border-base-300 p-4">
-                        <div className="form-control">
-                            <label className="label py-1"><span className="label-text text-xs">Script Validador/Modificador de Headers (JS):</span></label> {/* Label ajustada */}
-                            <Editor 
-                              value={formData.headers_validator_script} 
-                              onValueChange={(code) => handleScriptChange('headers_validator_script', code)}
-                              highlight={(code) => highlight(code || '', languages.javascript, 'javascript')} 
-                              placeholder={initialFormData.headers_validator_script} // Usa o placeholder do estado inicial
-                              style={editorStyles} 
-                              textareaClassName="focus:outline-none" 
-                              disabled={loading}
-                              padding={'1rem'}
-                              className="mt-2 bg-base-300" />
-                        </div>
-                    </div>
-                 </div>
-
-                 {/* Parâmetros de Entrada */}
-                 <div className="collapse collapse-arrow bg-base-200 border border-base-300 rounded-box">
-                     <input type="checkbox" className="peer" />
-                     <div className="collapse-title font-medium peer-checked:bg-base-300">Parâmetros de Entrada ({formData.params_config?.type === 'body' ? 'Corpo JSON' : 'Query Params'}) (Validação e Modificação)</div>
-                     <div className="collapse-content bg-base-100 peer-checked:border-t border-base-300 p-4">
-                        <div className="form-control">
-                            <label className="label py-1"><span className="label-text text-xs">Script Validador/Modificador de Parâmetros (JS):</span></label> {/* Label ajustada */}
-                             <Editor 
-                              value={formData.params_validator_script} 
-                              onValueChange={(code) => handleScriptChange('params_validator_script', code)}
-                              highlight={(code) => highlight(code || '', languages.javascript, 'javascript')}
-                              style={editorStyles} 
-                              textareaClassName="focus:outline-none" 
-                              disabled={loading}
-                              placeholder={initialFormData.params_validator_script} // Usa o placeholder do estado inicial
-                              padding={'1rem'}
-                              className="mt-2 bg-base-300" />
-                        </div>
-                    </div>
-                 </div>
-
-                 {/* Seção Headers de Saída REMOVIDA */}
-
-                 {/* Manipulação da Resposta */}
-                 <div className="collapse collapse-arrow bg-base-200 border border-base-300 rounded-box">
-                     <input type="checkbox" className="peer" />
-                     <div className="collapse-title font-medium peer-checked:bg-base-300">Manipulação da Resposta (Script)</div>
-                     <div className="collapse-content bg-base-100 peer-checked:border-t border-base-300 p-4">
-                        <div className="form-control">
-                            <label className="label py-1"><span className="label-text text-xs">Script Manipulador da Resposta (JS):</span></label>
-                             <Editor 
-                                value={formData.response_script} 
-                                onValueChange={(code) => handleScriptChange('response_script', code)}
-                                highlight={(code) => highlight(code || '', languages.javascript, 'javascript')} 
-                                style={editorStyles} 
-                                textareaClassName="focus:outline-none" 
-                                disabled={loading}
-                                placeholder={initialFormData.response_script} // Usa o placeholder do estado inicial
-                                padding={'1rem'}
-                                className="mt-2 bg-base-300" />
-                        </div>
-                    </div>
-                 </div>
-            </div> {/* Fim do space-y-3 */}
+          {/* Configurações Avançadas - Tabs controladas por estado React */}
+          <div className="mt-6">
+            <h3 className="text-lg font-medium mb-2">Configurações Avançadas</h3>
+            <div role="tablist" className="tabs tabs-boxed bg-base-200 mb-2">
+              <button
+                type="button"
+                className={`tab tab-bordered cursor-pointer${activeTab === 'headers' ? ' tab-active' : ''}`}
+                onClick={() => setActiveTab('headers')}
+              >
+                Headers de Entrada
+              </button>
+              <button
+                type="button"
+                className={`tab tab-bordered cursor-pointer${activeTab === 'params' ? ' tab-active' : ''}`}
+                onClick={() => setActiveTab('params')}
+              >
+                Parâmetros de Entrada
+              </button>
+              <button
+                type="button"
+                className={`tab tab-bordered cursor-pointer${activeTab === 'response' ? ' tab-active' : ''}`}
+                onClick={() => setActiveTab('response')}
+              >
+                Manipulação da Resposta
+              </button>
+            </div>
+            <div className="bg-base-100 border border-base-300 rounded-box p-4">
+              {activeTab === 'headers' && (
+                <div className="form-control">
+                  <label className="label py-1"><span className="label-text text-xs">Script Validador/Modificador de Headers (JS):</span></label>
+                  <Editor
+                    value={formData.headers_validator_script}
+                    onValueChange={(code) => handleScriptChange('headers_validator_script', code)}
+                    highlight={(code) => highlight(code || '', languages.javascript, 'javascript')}
+                    placeholder={initialFormData.headers_validator_script}
+                    style={editorStyles}
+                    textareaClassName="focus:outline-none"
+                    disabled={loading}
+                    padding={'1rem'}
+                    className="mt-2 bg-base-300"
+                  />
+                </div>
+              )}
+              {activeTab === 'params' && (
+                <div className="form-control">
+                  <label className="label py-1"><span className="label-text text-xs">Script Validador/Modificador de Parâmetros (JS):</span></label>
+                  <Editor
+                    value={formData.params_validator_script}
+                    onValueChange={(code) => handleScriptChange('params_validator_script', code)}
+                    highlight={(code) => highlight(code || '', languages.javascript, 'javascript')}
+                    style={editorStyles}
+                    textareaClassName="focus:outline-none"
+                    disabled={loading}
+                    placeholder={initialFormData.params_validator_script}
+                    padding={'1rem'}
+                    className="mt-2 bg-base-300"
+                  />
+                </div>
+              )}
+              {activeTab === 'response' && (
+                <div className="form-control">
+                  <label className="label py-1"><span className="label-text text-xs">Script Manipulador da Resposta (JS):</span></label>
+                  <Editor
+                    value={formData.response_script}
+                    onValueChange={(code) => handleScriptChange('response_script', code)}
+                    highlight={(code) => highlight(code || '', languages.javascript, 'javascript')}
+                    style={editorStyles}
+                    textareaClassName="focus:outline-none"
+                    disabled={loading}
+                    placeholder={initialFormData.response_script}
+                    padding={'1rem'}
+                    className="mt-2 bg-base-300"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
 
           {/* Input de arquivo oculto para importação */}
           <input

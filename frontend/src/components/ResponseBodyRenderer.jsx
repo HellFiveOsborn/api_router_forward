@@ -122,28 +122,28 @@ function ResponseBodyRenderer({ blob, contentType, headers }) {
   };
 
   const getLanguageName = (type) => {
-      if (type === 'json') return 'json';
-      if (type === 'html') return 'markup';
-      return 'clike';
+    if (type === 'json') return 'json';
+    if (type === 'html') return 'markup';
+    return 'clike';
   }
 
   const handleDownload = () => {
-      if (!objectUrl || !blob) return;
-      const link = document.createElement('a');
-      link.href = objectUrl;
-      // Tenta obter um nome de arquivo do header Content-Disposition, senão usa um genérico
-      const disposition = headers?.['content-disposition'];
-      let filename = `download.${contentType?.split('/')[1] || 'bin'}`; // Nome padrão
-      if (disposition) {
-          const filenameMatch = disposition.match(/filename\*?=['"]?([^'";]+)['"]?/);
-          if (filenameMatch && filenameMatch[1]) {
-              filename = decodeURIComponent(filenameMatch[1]);
-          }
+    if (!objectUrl || !blob) return;
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    // Tenta obter um nome de arquivo do header Content-Disposition, senão usa um genérico
+    const disposition = headers?.['content-disposition'];
+    let filename = `download.${contentType?.split('/')[1] || 'bin'}`; // Nome padrão
+    if (disposition) {
+      const filenameMatch = disposition.match(/filename\*?=['"]?([^'";]+)['"]?/);
+      if (filenameMatch && filenameMatch[1]) {
+        filename = decodeURIComponent(filenameMatch[1]);
       }
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+    }
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   if (isLoading) {
@@ -151,18 +151,17 @@ function ResponseBodyRenderer({ blob, contentType, headers }) {
   }
 
   if (error) {
-      return <div className="p-4 text-error text-center text-sm">{error}</div>;
+    return <div className="p-4 text-error text-center text-sm">{error}</div>;
   }
 
   // Renderização condicional
   switch (renderType) {
     case 'json':
     case 'text':
-    case 'html': // Renderiza HTML como código por segurança padrão, iframe abaixo é opcional
       return (
         <Editor
           value={content}
-          onValueChange={() => {}} // Read-only
+          onValueChange={() => { }} // Read-only
           highlight={(code) => highlight(code || '', getHighlightLanguage(renderType), getLanguageName(renderType))}
           readOnly
           padding={'1rem'}
@@ -191,16 +190,16 @@ function ResponseBodyRenderer({ blob, contentType, headers }) {
     case 'download':
       return (
         <div className="bg-base-300 rounded-box p-4 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-                 <FaFileAlt className="text-xl opacity-70"/>
-                 <div>
-                    <div className="text-sm font-medium">Arquivo Recebido</div>
-                    <div className="text-xs opacity-70">Tipo: {contentType || 'Desconhecido'}</div>
-                    <div className="text-xs opacity-70">Tamanho: {blob ? (blob.size / 1024).toFixed(2) : '0'} KB</div>
-                 </div>
+          <div className="flex items-center gap-2">
+            <FaFileAlt className="text-xl opacity-70" />
+            <div>
+              <div className="text-sm font-medium">Arquivo Recebido</div>
+              <div className="text-xs opacity-70">Tipo: {contentType || 'Desconhecido'}</div>
+              <div className="text-xs opacity-70">Tamanho: {blob ? (blob.size / 1024).toFixed(2) : '0'} KB</div>
             </div>
+          </div>
           <button onClick={handleDownload} className="btn btn-sm btn-outline btn-primary">
-            <FaDownload className="mr-1"/> Baixar
+            <FaDownload className="mr-1" /> Baixar
           </button>
         </div>
       );

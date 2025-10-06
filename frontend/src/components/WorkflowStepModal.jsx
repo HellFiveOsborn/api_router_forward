@@ -7,6 +7,7 @@ import 'prismjs/components/prism-json';
 import 'prismjs/components/prism-markup'; // Para HTML/XML
 import 'prismjs/themes/prism-tomorrow.css';
 import { FaArrowLeft, FaArrowRight } from 'react-icons/fa';
+import { ChevronLeft, ChevronRight, X, Clock, FileCode, AlertTriangle, CheckCircle } from 'lucide-react';
 // Não precisamos mais do ResponseBodyRenderer aqui, pois exibiremos como texto/json formatado
 
 // Estilos do editor
@@ -96,40 +97,93 @@ function WorkflowStepModal({ isOpen, onClose, stepData, currentIndex, totalSteps
 
 
   return (
-    <dialog id="workflow_step_modal" className="modal modal-open bg-black bg-opacity-60">
-      <div className="modal-box w-11/12 max-w-4xl">
-        <button type="button" className="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" onClick={onClose}>✕</button>
-        <h3 className="font-bold text-lg mb-1">Detalhes da Etapa: {stepData.name}</h3>
-        {/* Mostra tempo se disponível */}
-        <p className="text-xs opacity-70 mb-4">{stepData.details} {stepData.time !== null && stepData.time !== undefined ? `(${stepData.time}ms)` : ''}</p>
+    <dialog id="workflow_step_modal" className="modal modal-open bg-black bg-opacity-70">
+      <div className="modal-box w-11/12 max-w-4xl animate-scale-in shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6 pb-4 border-b border-base-300">
+          <div className="flex items-center gap-3">
+            {stepData.status === 'success' ? (
+              <div className="bg-success/10 p-3 rounded-full">
+                <CheckCircle className="w-6 h-6 text-success" />
+              </div>
+            ) : stepData.status === 'error' ? (
+              <div className="bg-error/10 p-3 rounded-full">
+                <AlertTriangle className="w-6 h-6 text-error" />
+              </div>
+            ) : (
+              <div className="bg-info/10 p-3 rounded-full">
+                <FileCode className="w-6 h-6 text-info" />
+              </div>
+            )}
+            <div>
+              <h3 className="font-bold text-2xl">{stepData.name}</h3>
+              <div className="flex items-center gap-3 mt-1">
+                <p className="text-sm opacity-70">{stepData.details}</p>
+                {stepData.time !== null && stepData.time !== undefined && (
+                  <div className="badge badge-ghost badge-sm gap-1">
+                    <Clock className="w-3 h-3" />
+                    {stepData.time}ms
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn btn-sm btn-circle btn-ghost hover-lift"
+            onClick={onClose}
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
 
         {/* Editor para exibir os dados */}
-        <div className="form-control">
-           <Editor
-              value={displayContent}
-              onValueChange={() => {}} // Read-only
-              highlight={(code) => highlight(code || '', languages[language] || languages.clike, language)}
-              readOnly
-              padding={'1rem'}
-              style={editorStyles}
-              textareaClassName="focus:outline-none"
-              className="bg-base-300 rounded-box" // Usa cor de fundo diferente
-            />
+        <div className="form-control animate-fade-in">
+          <div className="flex items-center gap-2 mb-2">
+            <FileCode className="w-4 h-4 opacity-70" />
+            <label className="label-text font-medium">Dados da Etapa</label>
+            <div className="badge badge-sm badge-outline ml-auto">{language.toUpperCase()}</div>
+          </div>
+          <Editor
+            value={displayContent}
+            onValueChange={() => {}} // Read-only
+            highlight={(code) => highlight(code || '', languages[language] || languages.clike, language)}
+            readOnly
+            padding={'1rem'}
+            style={editorStyles}
+            textareaClassName="focus:outline-none"
+            className="bg-base-200 rounded-box border border-base-300 shadow-inner"
+          />
         </div>
 
         {/* Ações / Navegação */}
-        <div className="modal-action mt-4 justify-between">
-           <button className="btn btn-ghost" onClick={handlePrev} disabled={currentIndex === 0}>
-             <FaArrowLeft className="mr-1"/> Anterior
-           </button>
-           <button className="btn btn-ghost" onClick={handleNext} disabled={currentIndex === totalSteps - 1}>
-             Próxima <FaArrowRight className="ml-1"/>
-           </button>
+        <div className="flex items-center justify-between mt-6 pt-4 border-t border-base-300">
+          <button
+            className="btn btn-ghost gap-2 hover-lift"
+            onClick={handlePrev}
+            disabled={currentIndex === 0}
+          >
+            <ChevronLeft className="w-4 h-4" />
+            Anterior
+          </button>
+
+          <div className="text-sm opacity-70">
+            Etapa {currentIndex + 1} de {totalSteps}
+          </div>
+
+          <button
+            className="btn btn-ghost gap-2 hover-lift"
+            onClick={handleNext}
+            disabled={currentIndex === totalSteps - 1}
+          >
+            Próxima
+            <ChevronRight className="w-4 h-4" />
+          </button>
         </div>
       </div>
-       <form method="dialog" className="modal-backdrop">
-            <button type="button" onClick={onClose}>close</button>
-       </form>
+      <form method="dialog" className="modal-backdrop">
+        <button type="button" onClick={onClose}>close</button>
+      </form>
     </dialog>
   );
 }

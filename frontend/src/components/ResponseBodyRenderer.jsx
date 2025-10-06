@@ -17,6 +17,7 @@ const editorStyles = {
   borderRadius: 'var(--rounded-box, 1rem)',
   color: 'hsl(var(--bc))',
   minHeight: '10rem',
+  maxHeight: '30rem',
   overflow: 'auto',
 };
 

@@ -2,6 +2,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { getForwards, deleteForward, exportForwardConfig } from '../services/api'; // Importa funções da API
 import { FaEdit, FaTrashAlt, FaExternalLinkAlt, FaPlus, FaFileExport } from 'react-icons/fa'; // Ícones
+import { FiSearch, FiFilter, FiCopy, FiCheck } from 'react-icons/fi';
+import { Copy, Check, ExternalLink, Trash2, Edit, FileDown, AlertTriangle } from 'lucide-react';
 
 // Função auxiliar para derivar path padrão da URL (adaptada do backend)
 function getDefaultPathFromUrl(urlString) {
@@ -22,6 +24,7 @@ function ForwardList({ onEdit, onAdd }) {
   const [forwards, setForwards] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [copiedIds, setCopiedIds] = useState({});
 
   const fetchForwards = useCallback(async () => {
     setLoading(true);
@@ -102,111 +105,170 @@ function ForwardList({ onEdit, onAdd }) {
   }
 
   return (
-    <div className="overflow-x-auto bg-base-100 rounded-box shadow-md relative">
+    <div className="relative">
       {/* Mostra erro mesmo se houver dados (ex: erro ao deletar) */}
       {error && forwards.length > 0 && (
-        <div role="alert" className="alert alert-warning shadow-lg absolute top-2 right-2 w-auto z-10">
-          <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+        <div role="alert" className="alert alert-warning shadow-xl mb-4 animate-shake">
+          <AlertTriangle className="h-5 w-5" />
           <span>{error}</span>
           <button className="btn btn-xs btn-ghost" onClick={() => setError('')}>Fechar</button>
         </div>
       )}
 
       {forwards.length === 0 && !loading ? (
-        <div className="p-10 text-center text-gray-500">
-          <p className="mb-4">Nenhum encaminhador configurado ainda.</p>
-          <button className="btn btn-primary btn-sm" onClick={onAdd}>
-            <FaPlus className="mr-1" /> Criar Primeiro Forward
-          </button>
+        <div className="card bg-base-100 shadow-xl border-2 border-dashed border-base-300 animate-fade-in">
+          <div className="card-body items-center text-center py-16">
+            <div className="bg-base-200 p-6 rounded-full mb-4">
+              <FaPlus className="w-12 h-12 opacity-50" />
+            </div>
+            <h3 className="text-2xl font-bold mb-2">Nenhum forward configurado</h3>
+            <p className="opacity-70 mb-6">Comece criando seu primeiro encaminhador de API</p>
+            <button className="btn btn-primary gap-2" onClick={onAdd}>
+              <FaPlus /> Criar Primeiro Forward
+            </button>
+          </div>
         </div>
       ) : (
-        <>
-          <table className="table table-zebra w-full">
-            {/* head */}
-            <thead>
-              <tr>
-                <th>Nome</th>
-                <th>Rota do Sistema</th>
-                <th>URL de Destino</th>
-                <th>Método</th>
-                <th>Última Modificação</th>
-                <th className="text-right">Ações</th>
-              </tr>
-            </thead>
-            <tbody>
-              {forwards.map((fwd) => (
-                // O erro de hidratação original era provavelmente devido a espaços/comentários
-                // entre o `<tbody>` e o primeiro `<tr>` ou entre `map` e `<tr>`.
-                // Garantindo que o map retorne diretamente o tr.
-                <React.Fragment key={fwd.id}>
-                  <tr className={`hover ${loading && 'opacity-50'}`}>
-                    <td className="font-medium">{fwd.nome}</td>
-                    <td>
-                      {/* Exibe a rota completa do sistema como link para copiar */}
-                      <button
-                        className="bg-base-300 px-1 rounded text-sm font-mono hover:bg-primary hover:text-primary-content transition-colors duration-150 flex items-center gap-1 group"
-                        title="Clique para copiar rota"
-                        onClick={() => {
-                          navigator.clipboard.writeText(
-                            `/${fwd.slug}${fwd.custom_route ? fwd.custom_route.replace(/\/$/, '') : getDefaultPathFromUrl(fwd.url_destino)}${(fwd.custom_route || getDefaultPathFromUrl(fwd.url_destino)) !== '/' ? '/*' : '*'
-                            }`
-                          );
-                        }}
-                        type="button"
-                      >
-                        <span>
-                          /{fwd.slug}{fwd.custom_route ? fwd.custom_route.replace(/\/$/, '') : getDefaultPathFromUrl(fwd.url_destino)}
-                          {(fwd.custom_route || getDefaultPathFromUrl(fwd.url_destino)) !== '/' ? '/*' : '*'}
-                        </span>
-                        <svg className="w-4 h-4 opacity-60 group-hover:opacity-100" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                        </svg>
-                      </button>
-                    </td>
-                    <td className="max-w-xs truncate" title={fwd.url_destino}>
-                      <a href={fwd.url_destino} target="_blank" rel="noopener noreferrer" className="link link-hover link-secondary inline-flex items-center text-sm">
-                        {fwd.url_destino} <FaExternalLinkAlt className="ml-1 text-xs" />
-                      </a>
-                    </td>
-                    <td><span className={`badge badge-sm ${fwd.metodo === 'POST' ? 'badge-success' :
-                        fwd.metodo === 'GET' ? 'badge-info' :
-                          fwd.metodo === 'PUT' ? 'badge-warning' :
-                            fwd.metodo === 'DELETE' ? 'badge-error' :
-                              'badge-ghost'
-                      }`}>{fwd.metodo}</span></td>
-                    <td className="text-xs text-gray-500">{fwd.updated_at ? new Date(fwd.updated_at).toLocaleString() : '-'}</td>
-                    <td className="text-right">
-                      <div className="flex gap-1 justify-end">
-                        <button
-                          className="btn btn-xs btn-ghost text-info tooltip" data-tip="Editar"
-                          onClick={() => handleEditClick(fwd)}
-                          disabled={loading} // Desabilita durante loading geral
-                        >
-                          <FaEdit />
-                        </button>
-                        <button
-                          className="btn btn-xs btn-ghost text-secondary tooltip" data-tip="Exportar"
-                          onClick={() => handleExportClick(fwd.id)}
-                          disabled={loading} // Desabilita durante loading geral
-                        >
-                          <FaFileExport />
-                        </button>
-                        <button
-                          className="btn btn-xs btn-ghost text-error tooltip" data-tip="Deletar"
-                          onClick={() => handleDeleteClick(fwd)}
-                          disabled={loading} // Desabilita durante loading geral
-                        >
-                          <FaTrashAlt />
-                        </button>
+        <div className="grid grid-cols-1 gap-4">
+          {forwards.map((fwd, index) => {
+            // Determina a rota baseada no slug e custom_route (simplificado)
+            let routePath = `/${fwd.slug}`;
+
+            // Adiciona custom_route se existir e não for apenas '/'
+            if (fwd.custom_route && fwd.custom_route.trim() !== '' && fwd.custom_route !== '/') {
+              const customRoute = fwd.custom_route.startsWith('/') ? fwd.custom_route : '/' + fwd.custom_route;
+              routePath += customRoute;
+            }
+
+            // Monta a rota completa com wildcard
+            const route = `${routePath}/*`;
+
+            // Obtém o host do ambiente ou usa o atual
+            const apiUrl = import.meta.env?.VITE_API_URL || 'http://localhost:3001';
+            const baseUrl = apiUrl.replace('/api', ''); // Remove '/api' se existir
+            const fullRoute = `${baseUrl}${route}`;
+
+            const handleCopyRoute = () => {
+              navigator.clipboard.writeText(fullRoute.slice(0, -1));
+              setCopiedIds(prev => ({ ...prev, [fwd.id]: true }));
+              setTimeout(() => {
+                setCopiedIds(prev => ({ ...prev, [fwd.id]: false }));
+              }, 2000);
+            };
+
+            const isCopied = copiedIds[fwd.id];
+
+            return (
+              <div
+                key={fwd.id}
+                className="card bg-base-100 shadow-lg hover-lift border border-base-300 animate-fade-in"
+                style={{ animationDelay: `${index * 0.05}s` }}
+              >
+                <div className="card-body p-4 md:p-6">
+                  <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                    {/* Informações principais */}
+                    <div className="flex-1 space-y-3">
+                      {/* Nome e método(s) */}
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <h3 className="text-xl font-bold">{fwd.nome}</h3>
+                        {/* Suporta método único (string) ou múltiplos (array) */}
+                        {Array.isArray(fwd.metodo) ? (
+                          fwd.metodo.map(m => (
+                            <span key={m} className={`badge badge-lg ${m === 'POST' ? 'badge-success' :
+                              m === 'GET' ? 'badge-info' :
+                                m === 'PUT' ? 'badge-warning' :
+                                  m === 'DELETE' ? 'badge-error' :
+                                    'badge-ghost'
+                              }`}>
+                              {m}
+                            </span>
+                          ))
+                        ) : (
+                          <span className={`badge badge-lg ${fwd.metodo === 'POST' ? 'badge-success' :
+                            fwd.metodo === 'GET' ? 'badge-info' :
+                              fwd.metodo === 'PUT' ? 'badge-warning' :
+                                fwd.metodo === 'DELETE' ? 'badge-error' :
+                                  'badge-ghost'
+                            }`}>
+                            {fwd.metodo}
+                          </span>
+                        )}
                       </div>
-                    </td>
-                  </tr>
-                </React.Fragment>
-              ))}
-            </tbody>
-          </table>
-        </>
+
+                      {/* Rota do sistema */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm opacity-70">Rota Completa:</span>
+                        <div className="flex items-center gap-2 bg-base-200 px-3 py-2 rounded-lg font-mono text-sm flex-1 min-w-0">
+                          <code className="truncate flex-1">
+                            <span className="opacity-60">{baseUrl}</span>
+                            <span className="text-primary font-semibold">{route}</span>
+                          </code>
+                          <button
+                            className="btn btn-xs btn-ghost tooltip tooltip-left"
+                            onClick={handleCopyRoute}
+                            data-tip={isCopied ? "Copiado!" : "Copiar rota completa"}
+                          >
+                            {isCopied ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* URL de destino */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm opacity-70">Destino:</span>
+                        <a
+                          href={fwd.url_destino}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="link link-secondary inline-flex items-center gap-1 text-sm"
+                        >
+                          <span className="truncate max-w-md">{fwd.url_destino}</span>
+                          <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                        </a>
+                      </div>
+
+                      {/* Data de modificação */}
+                      <div className="text-xs opacity-60">
+                        Atualizado em: {fwd.updated_at ? new Date(fwd.updated_at).toLocaleString('pt-BR') : '-'}
+                      </div>
+                    </div>
+
+                    {/* Ações */}
+                    <div className="flex md:flex-col gap-2">
+                      <button
+                        className="btn btn-sm btn-ghost gap-2 hover-lift tooltip tooltip-top"
+                        data-tip="Editar"
+                        onClick={() => handleEditClick(fwd)}
+                        disabled={loading}
+                      >
+                        <Edit className="w-4 h-4" />
+                        <span className="hidden md:inline">Editar</span>
+                      </button>
+                      <button
+                        className="btn btn-sm btn-ghost gap-2 hover-lift tooltip tooltip-top"
+                        data-tip="Exportar"
+                        onClick={() => handleExportClick(fwd.id)}
+                        disabled={loading}
+                      >
+                        <FileDown className="w-4 h-4" />
+                        <span className="hidden md:inline">Exportar</span>
+                      </button>
+                      <button
+                        className="btn btn-sm btn-error btn-outline gap-2 hover-lift tooltip tooltip-top"
+                        data-tip="Deletar"
+                        onClick={() => handleDeleteClick(fwd)}
+                        disabled={loading}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                        <span className="hidden md:inline">Deletar</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

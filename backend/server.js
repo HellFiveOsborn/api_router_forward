@@ -133,6 +133,18 @@ const db = new sqlite3.Database(dbPath, (err) => {
     )`, (err) => {
             if (err) console.error("Erro ao criar tabela 'forwards':", err.message);
         });
+
+        // Tabela de storage persistente (máx 5MB por chave)
+        db.run(`CREATE TABLE IF NOT EXISTS forward_storage (
+      forward_id INTEGER NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (forward_id, key),
+      FOREIGN KEY (forward_id) REFERENCES forwards(id) ON DELETE CASCADE
+    )`, (err) => {
+            if (err) console.error("Erro ao criar tabela 'forward_storage':", err.message);
+        });
     }
 });
 // --- Fim Configuração do Banco de Dados ---
@@ -146,135 +158,282 @@ function getDefaultPathFromUrl(urlString) {
     } catch (e) { return '/'; }
 }
 
-async function runScript(script, req, sharedContext, additionalContext = {}, scriptName = 'script', timeout = 5000) { // Timeout aumentado para 5s e função agora é async
+// Nova API unificada e flexível
+async function runScript(script, req, sharedContext, additionalContext = {}, scriptName = 'script', timeout = 5000, config = null) {
     if (!script || typeof script !== 'string' || script.trim() === '') {
-        return scriptName === 'Manipulador de Resposta' ? undefined : true; // Retorna undefined para resposta, true para validadores
+        return scriptName === 'Manipulador de Resposta' ? undefined : true;
     }
 
-    // Constrói o objeto 'route'
-    const route = {
-        params: sharedContext.routeParams || {}, // Parâmetros da rota customizada
-        url: req.originalUrl,
-        query_params: req.query,
-        uri: req.path,
-        protocol: req.protocol,
-        method: req.method, // Método original, não modificável pelo script
-    };
+    // Inicializa modificações se não existir
+    if (!sharedContext.targetUrlModifications) {
+        sharedContext.targetUrlModifications = {
+            overrideUrl: null,
+            addPath: null,
+            replaceVars: {},
+            removePath: null,
+            queryParams: null,
+            appendQueryParams: {},
+            filterQueryKeys: null,
+            methodOverride: null,
+            responseCodeOverride: null
+        };
+    }
 
-    // O contexto compartilhado será acessível como 'ctx'
-    const ctx = sharedContext;
+    // Objeto data unificado com todos os métodos
+    const data = {
+        // ===== MÉTODO HTTP =====
+        getMethod: () => sharedContext.currentMethod || req.method,
+        setMethod: (method) => {
+            sharedContext.targetUrlModifications.methodOverride = method.toUpperCase();
+        },
 
-    // Adiciona a função fetch ao contexto, usando axios por baixo
-    ctx.fetch = async (url, options = {}) => {
-        try {
-            const axiosConfig = {
-                url,
-                method: options.method || 'GET',
-                headers: options.headers || {},
-                data: options.body,
-                // Axios usa 'params' para query string. O fetch padrão espera que a URL já contenha.
-                // Para manter a simplicidade e compatibilidade, não vamos mapear 'params' diretamente.
-                // O usuário deve construir a URL com os query params necessários.
-                responseType: 'arraybuffer', // Garante que receberemos a resposta como buffer
-                validateStatus: () => true, // Permite tratar qualquer status code na lógica do script
-            };
+        // ===== CÓDIGO DE RESPOSTA =====
+        responseCode: (code) => {
+            sharedContext.targetUrlModifications.responseCodeOverride = code;
+        },
 
-            const response = await axios(axiosConfig);
+        // ===== HEADERS =====
+        getHeaders: () => ({ ...additionalContext.headers }) || {},
+        setHeader: (keyOrObj, value) => {
+            if (typeof keyOrObj === 'object') {
+                Object.assign(additionalContext.headers, keyOrObj);
+            } else {
+                additionalContext.headers[keyOrObj] = value;
+            }
+        },
+        removeHeader: (keyOrArray) => {
+            if (Array.isArray(keyOrArray)) {
+                keyOrArray.forEach(k => delete additionalContext.headers[k]);
+            } else if (typeof keyOrArray === 'object') {
+                Object.keys(keyOrArray).forEach(k => delete additionalContext.headers[k]);
+            } else {
+                delete additionalContext.headers[keyOrArray];
+            }
+        },
 
-            // Simula a API de resposta do Fetch para ser usada dentro do script
+        // ===== ROTA DE ENTRADA =====
+        getRoute: () => ({
+            method: req.method,
+            url: req.originalUrl,
+            uri: req.path,
+            protocol: req.protocol,
+            host: req.get('host'),
+            params: sharedContext.routeParams || {},
+            query: req.query,
+            headers: req.headers
+        }),
+
+        // ===== ROTA DE DESTINO =====
+        getDestRoute: () => {
+            const mods = sharedContext.targetUrlModifications;
             return {
-                ok: response.status >= 200 && response.status < 300,
-                status: response.status,
-                statusText: response.statusText,
-                headers: response.headers,
-                // Funções para consumir o corpo da resposta
-                json: () => JSON.parse(Buffer.from(response.data).toString('utf8')),
-                text: () => Buffer.from(response.data).toString('utf8'),
-                buffer: () => Buffer.from(response.data),
+                baseUrl: config?.url_destino || '',
+                overrideUrl: mods.overrideUrl,
+                addPath: mods.addPath,
+                replaceVars: mods.replaceVars,
+                removePath: mods.removePath,
+                queryParams: mods.queryParams,
+                appendQueryParams: mods.appendQueryParams,
+                filterQueryKeys: mods.filterQueryKeys,
+                method: mods.methodOverride || req.method
             };
-        } catch (error) {
-            console.error('[ctx.fetch] Erro ao executar fetch:', error.message);
-            // Relança o erro para que seja capturado pelo handler de erro do runScript
-            throw new Error(`Erro em ctx.fetch para ${url}: ${error.message}`);
-        }
+        },
+        setDestRoute: (modifications) => {
+            const mods = sharedContext.targetUrlModifications;
+            if (modifications.url) mods.overrideUrl = modifications.url;
+            if (modifications.addPath) mods.addPath = modifications.addPath;
+            if (modifications.replaceVars) mods.replaceVars = { ...mods.replaceVars, ...modifications.replaceVars };
+            if (modifications.removePath) mods.removePath = modifications.removePath;
+            if (modifications.query) mods.queryParams = modifications.query;
+            if (modifications.appendQuery) mods.appendQueryParams = { ...mods.appendQueryParams, ...modifications.appendQuery };
+            if (modifications.filter) mods.filterQueryKeys = modifications.filter;
+            if (modifications.method) mods.methodOverride = modifications.method.toUpperCase();
+        },
+
+        // ===== BODY =====
+        getBody: () => {
+            if (additionalContext.body !== undefined) return additionalContext.body;
+            if (additionalContext.query !== undefined) return additionalContext.query;
+            return null;
+        },
+        setBody: (newBody) => {
+            if (additionalContext.body !== undefined) {
+                additionalContext.body = newBody;
+            } else if (additionalContext.query !== undefined) {
+                additionalContext.query = newBody;
+            }
+        },
+
+        // ===== STORAGE (PERSISTENTE) =====
+        getStorage: async (key) => {
+            if (!config) return null;
+            return new Promise((resolve, reject) => {
+                db.get(
+                    'SELECT value FROM forward_storage WHERE forward_id = ? AND key = ?',
+                    [config.id, key],
+                    (err, row) => {
+                        if (err) reject(err);
+                        else resolve(row ? JSON.parse(row.value) : null);
+                    }
+                );
+            });
+        },
+        setStorage: async (key, value) => {
+            if (!config) return;
+            const valueStr = JSON.stringify(value);
+            if (Buffer.byteLength(valueStr, 'utf8') > 5 * 1024 * 1024) {
+                throw new Error('Storage value exceeds 5MB limit');
+            }
+            return new Promise((resolve, reject) => {
+                db.run(
+                    'INSERT OR REPLACE INTO forward_storage (forward_id, key, value, updated_at) VALUES (?, ?, ?, datetime("now"))',
+                    [config.id, key, valueStr],
+                    (err) => {
+                        if (err) reject(err);
+                        else resolve();
+                    }
+                );
+            });
+        },
+        delStorage: async (key) => {
+            if (!config) return;
+            return new Promise((resolve, reject) => {
+                db.run(
+                    'DELETE FROM forward_storage WHERE forward_id = ? AND key = ?',
+                    [config.id, key],
+                    (err) => {
+                        if (err) reject(err);
+                        else resolve();
+                    }
+                );
+            });
+        },
+
+        // ===== EXCEÇÃO =====
+        Exception: (errorOrMessage, statusCode = 400) => {
+            const error = new Error(typeof errorOrMessage === 'string' ? errorOrMessage : errorOrMessage.message || 'Script Exception');
+            error.statusCode = statusCode;
+            error.isScriptException = true;
+            if (typeof errorOrMessage === 'object') {
+                error.details = errorOrMessage;
+            }
+            throw error;
+        },
+
+        // ===== RESPOSTA =====
+        onResponse: (callback) => {
+            sharedContext.responseCallback = callback;
+        },
+        setResponse: (response) => {
+            sharedContext.responseOverride = response;
+        },
+
+        // ===== UTILITÁRIOS =====
+        fetch: async (url, options = {}) => {
+            try {
+                const axiosConfig = {
+                    url,
+                    method: options.method || 'GET',
+                    headers: options.headers || {},
+                    data: options.body,
+                    responseType: 'arraybuffer',
+                    validateStatus: () => true,
+                };
+
+                const response = await axios(axiosConfig);
+
+                return {
+                    ok: response.status >= 200 && response.status < 300,
+                    status: response.status,
+                    statusText: response.statusText,
+                    headers: response.headers,
+                    json: () => JSON.parse(Buffer.from(response.data).toString('utf8')),
+                    text: () => Buffer.from(response.data).toString('utf8'),
+                    buffer: () => Buffer.from(response.data),
+                };
+            } catch (error) {
+                throw new Error(`Erro em data.fetch para ${url}: ${error.message}`);
+            }
+        },
+
+        // Alias para compatibilidade
+        ctx: sharedContext
     };
 
     try {
-        // Cria o sandbox com ctx, route, console, setTimeout e contexto adicional
+        // Cria o sandbox com o objeto 'data' unificado
         const sandbox = vm.createContext({
-            ctx,
-            route,
+            data,
             console: { log: console.log, warn: console.warn, error: console.error },
             setTimeout,
-            ...additionalContext // Adiciona headers, params (body/query), responseBody, etc.
+            Buffer,
+            JSON,
+            Math,
+            Date,
+            Object,
+            String,
+            Number,
+            Array,
+            RegExp
         });
-        const wrappedScript = `(${script})`;
-        // Executa a função definida no script
+
+        // Suporta dois formatos:
+        // 1) Corpo puro do script (recomendado) -> será envolvido em (async (data) => { ... })
+        // 2) Função completa (legado) -> (async (data) => { ... }) ou (data) => { ... } ou function(data) { ... }
+        const rawScript = (script || '').trim();
+        const looksLikeFunction = /^(\s*(async\s*)?\(\s*.*\)\s*=>|\s*function\s*\(|\s*\(\s*data\s*\)\s*=>)/.test(rawScript);
+        // Adiciona uma quebra de linha antes do fechamento para evitar "Unexpected end of input" em alguns casos de comentários finais
+        const wrappedScript = looksLikeFunction ? rawScript : `(async (data) => { ${rawScript}\n })`;
+
+        // Executa a função
         const scriptFunction = vm.runInContext(wrappedScript, sandbox, { timeout });
 
         if (typeof scriptFunction !== 'function') {
-            console.warn(`[Forwarder Middleware] ${scriptName} não definiu uma função.`);
-            // Para validadores, a ausência de função permite continuar. Para resposta, não faz nada.
+            console.warn(`[Forwarder Middleware] ${scriptName} não definiu uma função válida.`);
             return scriptName === 'Manipulador de Resposta' ? undefined : true;
         }
 
-        // Chama a função do script com os argumentos apropriados baseados no nome
+        // Chama a função com o objeto data
+        await scriptFunction(data);
+
+        // Retorna baseado no tipo de script
         if (scriptName === 'Validador de Headers') {
-            // Assinatura: (headers, ctx, route) => headers | null | undefined | Error
-            return await scriptFunction(additionalContext.headers, ctx, route);
+            return additionalContext.headers;
         }
         if (scriptName === 'Validador de Parâmetros') {
-            // Assinatura: (params, ctx, route) => params | null | undefined | Error
-            // 'params' será o body ou query_params dependendo do método
-            const paramsKey = Object.keys(additionalContext).find(k => k === 'body' || k === 'query');
-
-            // Captura explicitamente o resultado para tratar retornos vazios (return;)
-            const result = await scriptFunction(additionalContext[paramsKey], ctx, route);
-
-            // Se o resultado for undefined (return; sem valor), trata como erro de validação
-            if (result === undefined) {
-                throw new Error("Validação falhou sem mensagem específica");
-            }
-
-            return result;
+            return additionalContext.body !== undefined ? additionalContext.body : additionalContext.query;
         }
         if (scriptName === 'Manipulador de Resposta') {
-            // Assinatura: (responseBody, responseHeaders, ctx, route) => { body, headers } | any
-            const scriptResultObject = await scriptFunction(additionalContext.responseBody, additionalContext.responseHeaders, ctx, route);
-            // Verifica se retornou o objeto esperado { body, headers }
-            if (typeof scriptResultObject === 'object' && scriptResultObject !== null && typeof scriptResultObject.headers === 'object') {
-                return { body: scriptResultObject.body, headers: scriptResultObject.headers };
-            } else {
-                console.warn(`[Forwarder Middleware] ${scriptName} não retornou um objeto { body, headers } válido. Usando retorno direto como corpo.`);
-                // Retorna o resultado direto como corpo e os headers originais da resposta
-                return { body: scriptResultObject, headers: additionalContext.responseHeaders };
+            if (sharedContext.responseOverride) {
+                return sharedContext.responseOverride;
             }
+            return { body: additionalContext.responseBody, headers: additionalContext.responseHeaders };
         }
 
-        // Fallback genérico (não deve ser usado com os nomes atuais)
-        console.warn(`[Forwarder Middleware] Chamada genérica para ${scriptName}. Verifique a lógica.`);
-        return await scriptFunction(); // Chama sem argumentos específicos se o nome não corresponder
+        return true;
     } catch (thrownValue) {
         console.error(`[Forwarder Middleware] Erro durante a execução de ${scriptName}:`, thrownValue);
+
+        // Trata exceções do script
+        if (thrownValue.isScriptException) {
+            throw thrownValue;
+        }
+
         let errorToThrow;
-        // Verifica se o valor lançado é um objeto com 'message' (convenção para erro customizado)
         if (typeof thrownValue === 'object' && thrownValue !== null && thrownValue.message) {
-            errorToThrow = new Error(thrownValue.message); // Cria um Error real para ter stack trace
-            errorToThrow.originalErrorObject = thrownValue; // Guarda o objeto original
-            errorToThrow.code = thrownValue.code; // Copia code se existir
-            errorToThrow.param = thrownValue.param; // Copia param se existir
+            errorToThrow = new Error(thrownValue.message);
+            errorToThrow.originalErrorObject = thrownValue;
+            errorToThrow.code = thrownValue.code;
+            errorToThrow.param = thrownValue.param;
         } else if (thrownValue instanceof Error) {
-            errorToThrow = thrownValue; // Já é um Error
+            errorToThrow = thrownValue;
         } else {
-            // Se lançou algo que não é Error nem objeto com message, converte para Error
             errorToThrow = new Error(String(thrownValue));
         }
 
-        // Adiciona propriedades para identificar erros de script
         errorToThrow.isScriptError = true;
-        errorToThrow.scriptName = scriptName; // Guarda o nome do script que falhou
+        errorToThrow.scriptName = scriptName;
 
-        // Relança o erro (agora sempre um objeto Error)
         throw errorToThrow;
     }
 }
@@ -407,6 +566,17 @@ app.use(async (req, res, next) => {
         const { config, params: routeParams } = result; // Extrai config e parâmetros da rota
         sharedContext.routeParams = routeParams || {}; // Adiciona parâmetros da rota ao contexto compartilhado
 
+        // Inicializa objeto para manipulação da URL de destino
+        sharedContext.targetUrlModifications = {
+            overrideUrl: null,        // URL completa para substituir url_destino
+            addPath: null,            // Path adicional para concatenar
+            replaceVars: {},          // Variáveis para substituir na URL
+            removePath: null,         // Regex para remover partes do path
+            queryParams: null,        // Query params para definir (substitui)
+            appendQueryParams: {},    // Query params para adicionar (mescla)
+            filterQueryKeys: null     // Array de chaves permitidas para query params
+        };
+
         // Incluir mais detalhes sobre a busca de configuração
         traceLog['config-lookup'] = {
             status: 'success',
@@ -426,11 +596,16 @@ app.use(async (req, res, next) => {
         };
         console.log(`[Forwarder Middleware] Usando configuração: ${config.nome}`);
 
-        if (config.metodo.toUpperCase() !== method.toUpperCase()) {
-            traceLog['method-validation'] = { status: 'error', data: { message: `Método ${method} não permitido. Esperado: ${config.metodo}` } };
-            setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
+        // Validação de método - suporta array de métodos
+        const allowedMethods = Array.isArray(config.metodo) ? config.metodo : [config.metodo];
+        const isMethodAllowed = allowedMethods.some(m => m.toUpperCase() === method.toUpperCase());
+
+        if (!isMethodAllowed) {
+            const allowedMethodsStr = allowedMethods.join(', ');
+            traceLog['method-validation'] = { status: 'error', data: { message: `Método ${method} não permitido. Esperado: ${allowedMethodsStr}` } };
+            setTraceHeaderIfNeeded(req, res, traceLog);
             // Retorna 405 Method Not Allowed se o método não bate
-            return res.status(405).json({ error: `Método ${method} não permitido para esta rota. Permitido: ${config.metodo}` });
+            return res.status(405).json({ error: `Método ${method} não permitido para esta rota. Permitido: ${allowedMethodsStr}` });
         }
         traceLog['method-validation'] = { status: 'success' };
 
@@ -458,8 +633,11 @@ app.use(async (req, res, next) => {
             }
         }
         const headerValidationStartTime = performance.now();
+        // LOG: Mostra o script de headers que será executado
+        console.log('[DEBUG] Script de Headers recebido para execução:\n', config.headers_validator_script);
+
         // Passa headersToSend (que pode ter sido modificado) e sharedContext para o script
-        let headerValidationResult = await runScript(config.headers_validator_script, req, sharedContext, { headers: headersToSend }, 'Validador de Headers');
+        let headerValidationResult = await runScript(config.headers_validator_script, req, sharedContext, { headers: headersToSend }, 'Validador de Headers', 5000, config);
         const headerValidationEndTime = performance.now();
         const headerValidationDuration = Math.round(headerValidationEndTime - headerValidationStartTime);
 
@@ -495,7 +673,7 @@ app.use(async (req, res, next) => {
         const paramsContext = { [paramsKey]: paramsValue }; // Contexto adicional específico para este script
         const paramValidationStartTime = performance.now();
         // Passa req, sharedContext, e o contexto adicional (body ou query)
-        let paramsValidationResult = await runScript(config.params_validator_script, req, sharedContext, paramsContext, 'Validador de Parâmetros');
+        let paramsValidationResult = await runScript(config.params_validator_script, req, sharedContext, paramsContext, 'Validador de Parâmetros', 5000, config);
         const paramValidationEndTime = performance.now();
         const paramValidationDuration = Math.round(paramValidationEndTime - paramValidationStartTime);
 
@@ -525,23 +703,94 @@ app.use(async (req, res, next) => {
         // Construção FINAL da URL de Destino com substituição de variáveis do contexto
         let targetUrl = config.url_destino;
         try {
-            // Substitui {variavel} por valores de ctx (incluindo ctx.routeParams)
-            // Usa 'ctx' diretamente, pois ele já contém routeParams
-            const contextForUrl = { ...(sharedContext.routeParams || {}), ...sharedContext }; // Usa sharedContext aqui
+            // 1. Verifica se há override completo da URL
+            if (sharedContext.targetUrlModifications.overrideUrl) {
+                targetUrl = sharedContext.targetUrlModifications.overrideUrl;
+                console.log(`[Forwarder Middleware] URL de destino substituída por script: ${targetUrl}`);
+            }
+
+            // 2. Substitui {variavel} por valores de ctx (incluindo ctx.routeParams) e replaceVars
+            const contextForUrl = {
+                ...(sharedContext.routeParams || {}),
+                ...sharedContext,
+                ...sharedContext.targetUrlModifications.replaceVars
+            };
             targetUrl = targetUrl.replace(/\{([^}]+)\}/g, (match, key) => {
-                // Busca o valor no contexto combinado
                 const value = contextForUrl[key.trim()];
-                // Codifica o valor se encontrado, senão mantém o placeholder
                 return value !== undefined ? encodeURIComponent(value) : match;
             });
 
-            // Verifica se ainda existem placeholders não substituídos (opcional, pode indicar erro de config)
+            // Verifica se ainda existem placeholders não substituídos
             if (/\{[^}]+\}/.test(targetUrl)) {
                 console.warn(`[Forwarder Middleware] URL de destino ainda contém placeholders não substituídos: ${targetUrl}`);
-                // Considerar lançar erro se for crítico: throw new Error("Parâmetros ausentes para a URL de destino.");
             }
 
-            console.log(`[Forwarder Middleware] URL de Destino Substituída: ${targetUrl}`);
+            // 3. Anexa o wildcard path capturado ao target URL (se não houve override)
+            if (!sharedContext.targetUrlModifications.overrideUrl) {
+                let wildcardPath = sharedContext.routeParams?.wildcard;
+
+                if (wildcardPath !== undefined) {
+                    if (Array.isArray(wildcardPath)) {
+                        wildcardPath = wildcardPath.join('/');
+                    }
+
+                    targetUrl = targetUrl.replace(/\/$/, '');
+
+                    if (wildcardPath && wildcardPath.length > 0) {
+                        const pathToAppend = wildcardPath.startsWith('/') ? wildcardPath : '/' + wildcardPath;
+                        targetUrl += pathToAppend;
+                        console.log(`[Forwarder Middleware] Wildcard path anexado: ${wildcardPath}`);
+                    }
+                }
+            }
+
+            // 4. Adiciona path extra se especificado
+            if (sharedContext.targetUrlModifications.addPath) {
+                targetUrl = targetUrl.replace(/\/$/, '');
+                const pathToAdd = sharedContext.targetUrlModifications.addPath.startsWith('/')
+                    ? sharedContext.targetUrlModifications.addPath
+                    : '/' + sharedContext.targetUrlModifications.addPath;
+                targetUrl += pathToAdd;
+                console.log(`[Forwarder Middleware] Path adicional anexado: ${pathToAdd}`);
+            }
+
+            // 5. Remove padrão do path se especificado
+            if (sharedContext.targetUrlModifications.removePath) {
+                const originalUrl = targetUrl;
+                targetUrl = targetUrl.replace(sharedContext.targetUrlModifications.removePath, '');
+                if (originalUrl !== targetUrl) {
+                    console.log(`[Forwarder Middleware] Path modificado por regex: ${originalUrl} -> ${targetUrl}`);
+                }
+            }
+
+            console.log(`[Forwarder Middleware] URL de Destino Final: ${targetUrl}`);
+
+            // 6. Aplicar modificações de query params
+            if (sharedContext.targetUrlModifications.queryParams !== null) {
+                // Substituir completamente os query params
+                paramsToSend = sharedContext.targetUrlModifications.queryParams;
+                console.log(`[Forwarder Middleware] Query params substituídos por script`);
+            }
+
+            // 7. Adicionar query params extras
+            if (Object.keys(sharedContext.targetUrlModifications.appendQueryParams).length > 0) {
+                paramsToSend = { ...paramsToSend, ...sharedContext.targetUrlModifications.appendQueryParams };
+                console.log(`[Forwarder Middleware] Query params adicionados:`, sharedContext.targetUrlModifications.appendQueryParams);
+            }
+
+            // 8. Filtrar query params permitidos
+            if (sharedContext.targetUrlModifications.filterQueryKeys !== null) {
+                const allowedKeys = sharedContext.targetUrlModifications.filterQueryKeys;
+                const filtered = {};
+                for (const key of allowedKeys) {
+                    if (paramsToSend[key] !== undefined) {
+                        filtered[key] = paramsToSend[key];
+                    }
+                }
+                paramsToSend = filtered;
+                console.log(`[Forwarder Middleware] Query params filtrados para:`, allowedKeys);
+            }
+
             // Incluir mais detalhes sobre a substituição de URL
             traceLog['url-substitution'] = {
                 status: 'success',
@@ -550,7 +799,8 @@ app.use(async (req, res, next) => {
                     substitutedUrl: targetUrl,
                     hasPlaceholders: /\{[^}]+\}/.test(targetUrl),
                     routeParams: sharedContext.routeParams,
-                    contextKeys: Object.keys(sharedContext)
+                    contextKeys: Object.keys(sharedContext),
+                    urlModifications: sharedContext.targetUrlModifications
                 }
             };
         } catch (substitutionError) {
@@ -564,7 +814,7 @@ app.use(async (req, res, next) => {
         console.log(`[Forwarder Middleware] Encaminhando para Destino Final: ${targetUrl}`);
         // --- DEBUG: Log detalhes da requisição para o destino ---
         console.log(`[DEBUG] Axios Request Config:`);
-        console.log(`  Method: ${config.metodo.toLowerCase()}`);
+        console.log(`  Method: ${method.toLowerCase()}`);
         console.log(`  URL: ${targetUrl}`);
         console.log(`  Headers: ${JSON.stringify(headersToSend, null, 2)}`);
         console.log(`  Query Params: ${JSON.stringify(paramsToSend, null, 2)}`);
@@ -583,17 +833,21 @@ app.use(async (req, res, next) => {
             status: 'pending',
             data: {
                 url: targetUrl,
-                method: config.metodo.toLowerCase(),
+                method: method.toLowerCase(), // Usa o método da requisição atual
                 headers: headersToSend,
                 body: dataToSend ? (typeof dataToSend === 'object' ? JSON.stringify(dataToSend) : dataToSend.toString()) : null,
                 queryParams: paramsToSend
             }
         };
         const requestStartTime = performance.now();
+        // Usa methodOverride se definido pelo script, senão usa o método original
+        const finalMethod = (sharedContext.targetUrlModifications?.methodOverride || method).toLowerCase();
         const axiosConfig = {
-            method: config.metodo.toLowerCase(), url: targetUrl, headers: headersToSend, params: paramsToSend, data: dataToSend,
+            method: finalMethod,
+            url: targetUrl, headers: headersToSend, params: paramsToSend, data: dataToSend,
             responseType: 'arraybuffer', validateStatus: () => true, timeout: 30000,
         };
+        console.log(`[Forwarder Middleware] Método HTTP final: ${finalMethod.toUpperCase()}`);
         const targetResponse = await axios(axiosConfig);
         const requestEndTime = performance.now();
         const requestDuration = Math.round(requestEndTime - requestStartTime);
@@ -648,7 +902,7 @@ app.use(async (req, res, next) => {
         const responseScriptContext = { responseBody: responseData, responseHeaders: { ...responseHeaders } };
         const respManipulationStartTime = performance.now();
         // Passa req, sharedContext, e o contexto adicional (responseBody, responseHeaders)
-        let scriptResult = await runScript(config.response_script, req, sharedContext, responseScriptContext, 'Manipulador de Resposta');
+        let scriptResult = await runScript(config.response_script, req, sharedContext, responseScriptContext, 'Manipulador de Resposta', 5000, config);
         const respManipulationEndTime = performance.now();
         const respManipulationDuration = Math.round(respManipulationEndTime - respManipulationStartTime);
 
@@ -730,7 +984,10 @@ app.use(async (req, res, next) => {
         setTraceHeaderIfNeeded(req, res, traceLog); // << MODIFICADO
 
         // Envia a resposta final (forward bem-sucedido)
-        res.status(targetResponse.status).set(finalResponseHeaders).send(responseData);
+        // Usa responseCodeOverride se definido pelo script, senão usa o código original
+        const finalStatusCode = sharedContext.targetUrlModifications?.responseCodeOverride || targetResponse.status;
+        console.log(`[Forwarder Middleware] Código de resposta final: ${finalStatusCode}`);
+        res.status(finalStatusCode).set(finalResponseHeaders).send(responseData);
 
     } catch (error) {
         // Erro durante o processo de forwarding (depois de encontrar config)

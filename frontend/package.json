@@ -11,9 +11,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.19.0",
+    "@codemirror/lang-javascript": "^6.2.4",
     "@tailwindcss/postcss": "^4.1.0",
     "@tailwindcss/vite": "^4.1.0",
+    "@uiw/react-codemirror": "^4.25.2",
     "dotenv": "^17.2.3",
+    "lucide-react": "^0.544.0",
     "postcss-cli": "^11.0.1",
     "prismjs": "^1.30.0",
     "react": "^19.1.0",
